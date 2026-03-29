@@ -1,6 +1,24 @@
-# Issue Viewer
+# AI-Native Project Viewer
 
 A self-hosted project tracker that reads markdown files. Kanban board, docs viewer, inline comments — all from plain `.md` files on disk.
+
+## Why?
+
+AI coding agents (Claude, Copilot, Cursor) work with files. They read them, write them, grep them. That's it. Every API call to GitHub Issues, Jira, or Linear is wasted tokens, authentication overhead, and fragile integration code.
+
+Plain markdown files on disk are the fastest, simplest interface for AI agents to manage project work. An agent can create an issue with `echo`, update status with `sed`, search with `grep`, and read context with `cat`. No API keys, no rate limits, no SDKs.
+
+This viewer gives you the human-friendly UI on top — kanban board, filters, inline editing — while keeping the data in the format that agents already understand: files.
+
+![List View](.images/note-1774784264.png) ![Board View](.images/note-1774784286.png) ![Docs View](.images/note-1774784303.png)
+
+## Demo
+
+```bash
+make demo
+```
+
+Open `http://localhost:8080` to see a sample project with issues and docs.
 
 ## Features
 
