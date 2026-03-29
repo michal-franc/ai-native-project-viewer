@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{if .Page}}{{.Page.Title}} — {{end}}{{.ProjectName}} Docs</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/theme.js"></script>
+</head>
+<body>
+    <div class="header">
+        <div class="container header-inner">
+            <div style="display:flex;align-items:center;">
+                <a href="/" class="project-back-link">Projects</a>
+                <span class="header-sep">/</span>
+                <h1>{{.ProjectName}}</h1>
+            </div>
+            <nav class="view-tabs">
+                <a href="{{.Prefix}}/" class="view-tab">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h12v1.5H2V2zm0 4h12v1.5H2V6zm0 4h12v1.5H2V10zm0 4h12v1.5H2V14z"/></svg>
+                    List
+                </a>
+                <a href="{{.Prefix}}/board" class="view-tab">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2h4v12H1V2zm5 0h4v8H6V2zm5 0h4v10h-4V2z"/></svg>
+                    Board
+                </a>
+                <a href="{{.Prefix}}/docs" class="view-tab active">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 1h5v2H3v10h4v2H1V1zm9 0h5v14H8v-2h4V3H10V1zM5 5h2v1H5V5zm0 2h2v1H5V7zm0 2h2v1H5V9z"/></svg>
+                    Docs
+                </a>
+            </nav>
+            <div class="theme-picker">
+                <button class="theme-btn" data-theme="dark" title="Dark"></button>
+                <button class="theme-btn" data-theme="dracula" title="Dracula"></button>
+                <button class="theme-btn" data-theme="light" title="Light"></button>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        {{if .Sections}}
+        <div class="docs-layout">
+            <nav class="docs-sidebar">
+                {{range .Sections}}
+                {{if .Name}}
+                <div class="docs-section">
+                    <button class="docs-section-toggle{{if and $.Page (eq $.Page.Section .Name)}} open{{end}}" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+                        <svg class="docs-chevron" width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M4 2l4 4-4 4"/></svg>
+                        {{.Name}}
+                    </button>
+                    <ul class="docs-nav docs-subnav{{if and $.Page (eq $.Page.Section .Name)}} open{{end}}">
+                        {{range .Pages}}
+                        <li>
+                            <a href="{{$.Prefix}}/docs/{{.Slug}}" class="docs-nav-link{{if and $.Page (eq $.Page.Slug .Slug)}} active{{end}}">{{.Title}}</a>
+                        </li>
+                        {{end}}
+                    </ul>
+                </div>
+                {{else}}
+                <ul class="docs-nav">
+                    {{range .Pages}}
+                    <li>
+                        <a href="{{$.Prefix}}/docs/{{.Slug}}" class="docs-nav-link{{if and $.Page (eq $.Page.Slug .Slug)}} active{{end}}">{{.Title}}</a>
+                    </li>
+                    {{end}}
+                </ul>
+                {{end}}
+                {{end}}
+            </nav>
+
+            {{if .Page}}
+            <div class="docs-content">
+                <h1 class="docs-title">{{.Page.Title}}</h1>
+                <div class="detail-body">
+                    {{safeHTML .Page.BodyHTML}}
+                </div>
+            </div>
+            {{end}}
+        </div>
+        {{else}}
+        <div class="empty-state">
+            <h2>No documentation yet</h2>
+            <p>Add markdown files to the docs directory to get started.</p>
+        </div>
+        {{end}}
+    </div>
+</body>
+</html>

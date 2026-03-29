@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.ProjectName}} — Board</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/theme.js"></script>
+</head>
+<body>
+    <div class="header">
+        <div class="container header-inner">
+            <div style="display:flex;align-items:center;">
+                <a href="/" class="project-back-link">Projects</a>
+                <span class="header-sep">/</span>
+                <h1>{{.ProjectName}}</h1>
+                <span class="count">{{.Total}}</span>
+            </div>
+            <nav class="view-tabs">
+                <a href="{{.Prefix}}/" class="view-tab">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h12v1.5H2V2zm0 4h12v1.5H2V6zm0 4h12v1.5H2V10zm0 4h12v1.5H2V14z"/></svg>
+                    List
+                </a>
+                <a href="{{.Prefix}}/board" class="view-tab active">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2h4v12H1V2zm5 0h4v8H6V2zm5 0h4v10h-4V2z"/></svg>
+                    Board
+                </a>
+                <a href="{{.Prefix}}/docs" class="view-tab">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 1h5v2H3v10h4v2H1V1zm9 0h5v14H8v-2h4V3H10V1zM5 5h2v1H5V5zm0 2h2v1H5V7zm0 2h2v1H5V9z"/></svg>
+                    Docs
+                </a>
+            </nav>
+            <div class="theme-picker">
+                <button class="theme-btn" data-theme="dark" title="Dark"></button>
+                <button class="theme-btn" data-theme="dracula" title="Dracula"></button>
+                <button class="theme-btn" data-theme="light" title="Light"></button>
+            </div>
+        </div>
+    </div>
+
+    <form class="board-filter-bar" method="GET" action="{{.Prefix}}/board">
+        <select name="version" onchange="this.form.submit()">
+            <option value="">All versions</option>
+            {{range .Versions}}
+            <option value="{{.}}" {{if eq . $.Version}}selected{{end}}>v{{.}}</option>
+            {{end}}
+        </select>
+
+        <select name="assignee" onchange="this.form.submit()">
+            <option value="">All assignees</option>
+            <option value="_claimed" {{if eq .Assignee "_claimed"}}selected{{end}}>Claimed</option>
+            <option value="_unclaimed" {{if eq .Assignee "_unclaimed"}}selected{{end}}>Unclaimed</option>
+            {{range .Assignees}}
+            <option value="{{.}}" {{if eq . $.Assignee}}selected{{end}}>{{.}}</option>
+            {{end}}
+        </select>
+
+        {{if or .Version .Assignee}}
+        <a href="{{.Prefix}}/board" class="clear-btn">Clear filters</a>
+        {{end}}
+    </form>
+
+    <div class="board-container">
+        <div class="board">
+            {{range .Columns}}
+            <div class="board-column" data-status="{{.Status}}">
+                <div class="board-column-header">
+                    <div class="board-column-header-top">
+                        <span class="board-column-dot" style="border-color:{{statusColor .Status}}"></span>
+                        <span class="board-column-title">{{.Status}}</span>
+                        <span class="board-column-count">{{len .Issues}}</span>
+                    </div>
+                    {{if .Description}}
+                    <div class="board-column-desc">{{.Description}}</div>
+                    {{end}}
+                </div>
+                <div class="board-column-cards">
+                    {{range .Issues}}
+                    <a href="{{$.Prefix}}/issue/{{.Slug}}?from=board{{if $.Version}}%3Fversion%3D{{$.Version}}{{end}}" class="board-card{{if .Assignee}} board-card-assigned{{end}}" draggable="true" data-slug="{{.Slug}}" {{if .Assignee}}style="border-left: 3px solid {{assigneeColor .Assignee}}"{{end}}>
+                        <div class="board-card-id">
+                            <span class="board-card-dot" style="border-color:{{statusColor .Status}}"></span>
+                            {{if .System}}<span>{{.System}}</span>{{end}}
+                            <span class="board-card-slug">#{{.Slug}}</span>
+                        </div>
+                        <div class="board-card-title">{{.Title}}</div>
+                        {{if .Labels}}
+                        <div class="board-card-labels">
+                            {{range .Labels}}
+                            <span class="board-label">{{.}}</span>
+                            {{end}}
+                        </div>
+                        {{end}}
+                        {{if .Assignee}}
+                        <div class="board-card-assignee">
+                            <span class="assignee-dot" style="background:{{assigneeColor .Assignee}}"></span>
+                            {{.Assignee}}
+                        </div>
+                        {{end}}
+                    </a>
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+        </div>
+    </div>
+
+    <div class="save-toast" id="save-toast">Saved</div>
+
+    <script>
+    const prefix = "{{.Prefix}}";
+
+    // Shift+scroll converts vertical scroll to horizontal on the board
+    const board = document.querySelector('.board-container');
+    board.addEventListener('wheel', function(e) {
+        if (e.shiftKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+            e.preventDefault();
+            board.scrollLeft += e.deltaY;
+        }
+    }, { passive: false });
+
+    // Drag and drop
+    let draggedCard = null;
+
+    document.querySelectorAll('.board-card').forEach(card => {
+        card.addEventListener('dragstart', function(e) {
+            draggedCard = this;
+            this.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', this.dataset.slug);
+            // Prevent navigation on drag
+            setTimeout(() => { this.style.opacity = '0.4'; }, 0);
+        });
+
+        card.addEventListener('dragend', function() {
+            this.classList.remove('dragging');
+            this.style.opacity = '';
+            draggedCard = null;
+            document.querySelectorAll('.board-column').forEach(col => {
+                col.classList.remove('drag-over');
+            });
+        });
+
+        // Prevent click navigation when finishing a drag
+        card.addEventListener('click', function(e) {
+            if (this.classList.contains('just-dropped')) {
+                e.preventDefault();
+                this.classList.remove('just-dropped');
+            }
+        });
+    });
+
+    document.querySelectorAll('.board-column-cards').forEach(cardArea => {
+        const column = cardArea.closest('.board-column');
+
+        cardArea.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            column.classList.add('drag-over');
+        });
+
+        cardArea.addEventListener('dragleave', function(e) {
+            if (!cardArea.contains(e.relatedTarget)) {
+                column.classList.remove('drag-over');
+            }
+        });
+
+        cardArea.addEventListener('drop', function(e) {
+            e.preventDefault();
+            column.classList.remove('drag-over');
+
+            const slug = e.dataTransfer.getData('text/plain');
+            const newStatus = column.dataset.status;
+
+            if (!slug || !draggedCard) return;
+
+            // Move the card visually
+            cardArea.appendChild(draggedCard);
+            draggedCard.classList.add('just-dropped');
+
+            // Update column counts
+            updateColumnCounts();
+
+            // POST the status change
+            fetch(prefix + '/issue/' + slug, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: newStatus })
+            }).then(res => {
+                const toast = document.getElementById('save-toast');
+                toast.textContent = res.ok ? 'Moved to ' + newStatus : 'Error';
+                toast.className = 'save-toast ' + (res.ok ? 'show' : 'show error');
+                setTimeout(() => { toast.className = 'save-toast'; }, 1500);
+            });
+        });
+    });
+
+    // Also allow dropping on the column header
+    document.querySelectorAll('.board-column-header').forEach(header => {
+        const column = header.closest('.board-column');
+        const cardArea = column.querySelector('.board-column-cards');
+
+        header.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            column.classList.add('drag-over');
+        });
+
+        header.addEventListener('dragleave', function(e) {
+            if (!header.contains(e.relatedTarget)) {
+                column.classList.remove('drag-over');
+            }
+        });
+
+        header.addEventListener('drop', function(e) {
+            e.preventDefault();
+            column.classList.remove('drag-over');
+
+            const slug = e.dataTransfer.getData('text/plain');
+            const newStatus = column.dataset.status;
+
+            if (!slug || !draggedCard) return;
+
+            cardArea.appendChild(draggedCard);
+            draggedCard.classList.add('just-dropped');
+            updateColumnCounts();
+
+            fetch(prefix + '/issue/' + slug, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: newStatus })
+            }).then(res => {
+                const toast = document.getElementById('save-toast');
+                toast.textContent = res.ok ? 'Moved to ' + newStatus : 'Error';
+                toast.className = 'save-toast ' + (res.ok ? 'show' : 'show error');
+                setTimeout(() => { toast.className = 'save-toast'; }, 1500);
+            });
+        });
+    });
+
+    function updateColumnCounts() {
+        document.querySelectorAll('.board-column').forEach(col => {
+            const count = col.querySelectorAll('.board-card').length;
+            col.querySelector('.board-column-count').textContent = count;
+        });
+    }
+    </script>
+</body>
+</html>

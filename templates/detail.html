@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Issue.Title}} — {{.ProjectName}}</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/theme.js"></script>
+</head>
+<body>
+    <div class="header">
+        <div class="container header-inner">
+            <div style="display:flex;align-items:center;">
+                <a href="/" class="project-back-link">Projects</a>
+                <span class="header-sep">/</span>
+                <h1>{{.ProjectName}}</h1>
+            </div>
+            <div class="theme-picker">
+                <button class="theme-btn" data-theme="dark" title="Dark"></button>
+                <button class="theme-btn" data-theme="dracula" title="Dracula"></button>
+                <button class="theme-btn" data-theme="light" title="Light"></button>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <a href="{{.BackURL}}" class="detail-back">← Back</a>
+
+        <div class="detail-layout">
+            <div>
+                <h1 class="detail-title">{{.Issue.Title}}</h1>
+                <div class="body-toolbar">
+                    <button class="body-tab active" id="btn-preview" onclick="showPreview()">Preview</button>
+                    <button class="body-tab" id="btn-edit" onclick="showEditor()">Edit</button>
+                </div>
+                <div class="detail-body" id="body-preview">
+                    {{if .Issue.BodyHTML}}
+                    {{linkIssueRefs .Issue.BodyHTML .Prefix}}
+                    {{else}}
+                    <p style="color:var(--text-secondary)">No description provided.</p>
+                    {{end}}
+                </div>
+                <div class="body-editor-wrap" id="body-editor" style="display:none">
+                    <textarea class="body-textarea" id="body-textarea">{{.Issue.BodyRaw}}</textarea>
+                    <button class="body-save-btn" onclick="saveBody()">Save</button>
+                </div>
+            </div>
+
+            <div class="detail-sidebar">
+                <div class="sidebar-section">
+                    <h3>Status</h3>
+                    <div class="sidebar-value">
+                        <select class="edit-select" data-field="status" onchange="updateField(this)">
+                            {{range $.Statuses}}
+                            <option value="{{.}}" {{if eq . $.Issue.Status}}selected{{end}}>{{.}}</option>
+                            {{end}}
+                        </select>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>Priority</h3>
+                    <div class="sidebar-value">
+                        <select class="edit-select" data-field="priority" onchange="updateField(this)">
+                            <option value="" {{if eq .Issue.Priority ""}}selected{{end}}>—</option>
+                            <option value="low" {{if eq .Issue.Priority "low"}}selected{{end}}>low</option>
+                            <option value="medium" {{if eq .Issue.Priority "medium"}}selected{{end}}>medium</option>
+                            <option value="high" {{if eq .Issue.Priority "high"}}selected{{end}}>high</option>
+                            <option value="critical" {{if eq .Issue.Priority "critical"}}selected{{end}}>critical</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>Assignee</h3>
+                    <div class="sidebar-value">
+                        <input type="text" class="edit-input" data-field="assignee" value="{{.Issue.Assignee}}" placeholder="Unassigned" onchange="updateField(this)">
+                    </div>
+                </div>
+
+                {{if .Issue.System}}
+                <div class="sidebar-section">
+                    <h3>System</h3>
+                    <div class="sidebar-value">{{.Issue.System}}</div>
+                </div>
+                {{end}}
+
+                <div class="sidebar-section">
+                    <h3>Version</h3>
+                    <div class="sidebar-value">
+                        <input type="text" class="edit-input" data-field="version" value="{{.Issue.Version}}" placeholder="—" onchange="updateField(this)">
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>Labels</h3>
+                    <div class="sidebar-labels" id="labels-container">
+                        {{range .Issue.Labels}}
+                        <span class="label-badge badge editable-label">{{.}}<button class="label-remove" onclick="removeLabel(this, '{{.}}')">&times;</button></span>
+                        {{end}}
+                    </div>
+                    <div class="label-add-row">
+                        <input type="text" class="edit-input" id="new-label" placeholder="Add label..." onkeydown="if(event.key==='Enter'){event.preventDefault();addLabel()}">
+                        <button class="label-add-btn" onclick="addLabel()">+</button>
+                    </div>
+                </div>
+
+                {{if .Issue.Created}}
+                <div class="sidebar-section">
+                    <h3>Created</h3>
+                    <div class="sidebar-value">{{.Issue.Created}}</div>
+                </div>
+                {{end}}
+            </div>
+        </div>
+    </div>
+
+    <div class="save-toast" id="save-toast">Saved</div>
+
+    <script>
+    const issueURL = "{{.Prefix}}/issue/{{.Issue.Slug}}";
+
+    function updateField(el) {
+        const field = el.dataset.field;
+        const value = el.value;
+        const body = {};
+        body[field] = value;
+        saveUpdate(body);
+    }
+
+    function getCurrentLabels() {
+        const labels = [];
+        document.querySelectorAll('.editable-label').forEach(el => {
+            labels.push(el.textContent.replace('×', '').trim());
+        });
+        return labels;
+    }
+
+    function removeLabel(btn, label) {
+        btn.parentElement.remove();
+        saveUpdate({ labels: getCurrentLabels() });
+    }
+
+    function addLabel() {
+        const input = document.getElementById('new-label');
+        const label = input.value.trim();
+        if (!label) return;
+
+        const container = document.getElementById('labels-container');
+        const span = document.createElement('span');
+        span.className = 'label-badge badge editable-label';
+        span.textContent = label;
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'label-remove';
+        removeBtn.innerHTML = '&times;';
+        removeBtn.onclick = function() { removeLabel(this, label); };
+        span.appendChild(removeBtn);
+        container.appendChild(span);
+
+        input.value = '';
+        saveUpdate({ labels: getCurrentLabels() });
+    }
+
+    function showEditor() {
+        document.getElementById('body-preview').style.display = 'none';
+        document.getElementById('body-editor').style.display = 'block';
+        document.getElementById('btn-edit').classList.add('active');
+        document.getElementById('btn-preview').classList.remove('active');
+        document.getElementById('body-textarea').focus();
+    }
+
+    function showPreview() {
+        document.getElementById('body-editor').style.display = 'none';
+        document.getElementById('body-preview').style.display = 'block';
+        document.getElementById('btn-preview').classList.add('active');
+        document.getElementById('btn-edit').classList.remove('active');
+    }
+
+    function saveBody() {
+        const text = document.getElementById('body-textarea').value;
+        saveUpdate({ body: text }, function() {
+            location.reload();
+        });
+    }
+
+    function saveUpdate(body, onSuccess) {
+        fetch(issueURL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        }).then(res => {
+            const toast = document.getElementById('save-toast');
+            toast.textContent = res.ok ? 'Saved' : 'Error';
+            toast.className = 'save-toast ' + (res.ok ? 'show' : 'show error');
+            setTimeout(() => { toast.className = 'save-toast'; }, 1500);
+            if (res.ok && onSuccess) onSuccess();
+        });
+    }
+
+    // --- Inline comments ---
+    const commentsURL = issueURL + '/comments';
+    let allComments = [];
+
+    const ICON_EYE = '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2C4.3 2 1.2 4.7.1 8c1.1 3.3 4.2 6 7.9 6s6.8-2.7 7.9-6C14.8 4.7 11.7 2 8 2zm0 10c-2.2 0-4-1.8-4-4s1.8-4 4-4 4 1.8 4 4-1.8 4-4 4zm0-6.5C6.6 5.5 5.5 6.6 5.5 8s1.1 2.5 2.5 2.5 2.5-1.1 2.5-2.5S9.4 5.5 8 5.5z"/></svg>';
+    const ICON_PERSON = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 8a3 3 0 100-6 3 3 0 000 6zm-5 6s-1 0-1-1 1-4 6-4 6 3 6 4-1 1-1 1H3z"/></svg>';
+    const ICON_BOT = '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a1 1 0 011 1v1h2a2 2 0 012 2v1h1a1 1 0 110 2h-1v2a2 2 0 01-2 2h-1v1a1 1 0 11-2 0v-1H6v1a1 1 0 11-2 0v-1H3a2 2 0 01-2-2V8H0a1 1 0 110-2h1V5a2 2 0 012-2h2V2a1 1 0 011-1zM6 7a1 1 0 100-2 1 1 0 000 2zm4 0a1 1 0 100-2 1 1 0 000 2zm-5 3a1 1 0 011-1h4a1 1 0 110 2H6a1 1 0 01-1-1z"/></svg>';
+
+    function initComments() {
+        const body = document.getElementById('body-preview');
+        if (!body) return;
+
+        const children = Array.from(body.children);
+        children.forEach((el, idx) => {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'comment-block';
+            wrapper.dataset.block = idx;
+
+            const gutter = document.createElement('div');
+            gutter.className = 'comment-gutter';
+            gutter.innerHTML = '<button class="comment-eye" data-block="' + idx + '" title="Comments"></button>';
+
+            el.parentNode.insertBefore(wrapper, el);
+            wrapper.appendChild(gutter);
+            wrapper.appendChild(el);
+        });
+
+        fetch(commentsURL)
+            .then(r => r.json())
+            .then(comments => {
+                allComments = comments;
+                updateCommentIndicators();
+            });
+
+        body.addEventListener('click', function(e) {
+            const btn = e.target.closest('.comment-eye');
+            if (!btn) return;
+            e.stopPropagation();
+            openCommentPopover(btn, parseInt(btn.dataset.block));
+        });
+
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.comment-popover') && !e.target.closest('.comment-eye')) {
+                document.querySelectorAll('.comment-popover').forEach(p => p.remove());
+            }
+        });
+    }
+
+    function updateCommentIndicators() {
+        const counts = {};
+        const openCounts = {};
+        allComments.forEach(c => {
+            counts[c.block] = (counts[c.block] || 0) + 1;
+            if (c.status !== 'done') openCounts[c.block] = (openCounts[c.block] || 0) + 1;
+        });
+
+        document.querySelectorAll('.comment-eye').forEach(btn => {
+            const block = parseInt(btn.dataset.block);
+            const count = counts[block] || 0;
+            const open = openCounts[block] || 0;
+            const allDone = count > 0 && open === 0;
+            btn.className = 'comment-eye' + (count > 0 ? (allDone ? ' all-done' : ' has-comments') : '');
+            if (count > 0) {
+                btn.innerHTML = (allDone ? '<span class="comment-check">&#10003;</span>' : ICON_EYE)
+                    + '<span class="comment-count">' + count + '</span>';
+            } else {
+                btn.innerHTML = '<span style="opacity:0.3">' + ICON_EYE + '</span>';
+            }
+        });
+    }
+
+    function openCommentPopover(btn, blockIdx) {
+        document.querySelectorAll('.comment-popover').forEach(p => p.remove());
+
+        const popover = document.createElement('div');
+        popover.className = 'comment-popover';
+
+        const blockComments = allComments.filter(c => c.block === blockIdx);
+
+        let html = '';
+        if (blockComments.length > 0) {
+            html += '<div class="comment-list">';
+            blockComments.forEach(c => {
+                const isDone = c.status === 'done';
+                const sourceIcon = c.source === 'app' ? ICON_PERSON : ICON_BOT;
+                const sourceClass = c.source === 'app' ? 'human' : 'bot';
+                html += '<div class="comment-item' + (isDone ? ' comment-done' : '') + '">'
+                    + '<div class="comment-item-header">'
+                    + '<span class="comment-source-icon ' + sourceClass + '">' + sourceIcon + '</span>'
+                    + '<span class="comment-date">' + c.date + '</span>'
+                    + '<span class="comment-actions">'
+                    + '<button class="comment-toggle-btn" onclick="toggleComment(' + c.id + ',' + blockIdx + ')" title="' + (isDone ? 'Reopen' : 'Mark done') + '">'
+                    + (isDone ? '&#8634;' : '&#10003;') + '</button>'
+                    + '<button class="comment-delete-btn" onclick="deleteComment(' + c.id + ',' + blockIdx + ')" title="Delete">&times;</button>'
+                    + '</span>'
+                    + '</div>'
+                    + '<div class="comment-text">' + escapeHtml(c.text) + '</div>'
+                    + '</div>';
+            });
+            html += '</div>';
+        }
+
+        html += '<div class="comment-add">'
+            + '<textarea class="comment-text-input" placeholder="Add a comment..." id="comment-text-' + blockIdx + '"></textarea>'
+            + '<button class="comment-submit" onclick="submitComment(' + blockIdx + ')">Comment</button>'
+            + '</div>';
+
+        popover.innerHTML = html;
+        btn.closest('.comment-block').appendChild(popover);
+    }
+
+    function submitComment(blockIdx) {
+        const text = document.getElementById('comment-text-' + blockIdx).value.trim();
+        if (!text) return;
+
+        fetch(commentsURL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ block: blockIdx, text: text })
+        }).then(res => {
+            if (res.ok) {
+                // Reload comments from server to get the ID
+                fetch(commentsURL).then(r => r.json()).then(comments => {
+                    allComments = comments;
+                    updateCommentIndicators();
+                    document.querySelectorAll('.comment-popover').forEach(p => p.remove());
+                    showToast('Comment added');
+                });
+            }
+        });
+    }
+
+    function toggleComment(id, blockIdx) {
+        fetch(commentsURL + '/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: id })
+        }).then(res => {
+            if (res.ok) {
+                const c = allComments.find(c => c.id === id);
+                if (c) c.status = c.status === 'done' ? 'open' : 'done';
+                updateCommentIndicators();
+                // Refresh popover
+                const btn = document.querySelector('.comment-eye[data-block="' + blockIdx + '"]');
+                if (btn) openCommentPopover(btn, blockIdx);
+            }
+        });
+    }
+
+    function deleteComment(id, blockIdx) {
+        fetch(commentsURL + '/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: id })
+        }).then(res => {
+            if (res.ok) {
+                allComments = allComments.filter(c => c.id !== id);
+                updateCommentIndicators();
+                const btn = document.querySelector('.comment-eye[data-block="' + blockIdx + '"]');
+                if (btn) openCommentPopover(btn, blockIdx);
+                showToast('Comment deleted');
+            }
+        });
+    }
+
+    function showToast(msg) {
+        const toast = document.getElementById('save-toast');
+        toast.textContent = msg;
+        toast.className = 'save-toast show';
+        setTimeout(() => { toast.className = 'save-toast'; }, 1500);
+    }
+
+    function escapeHtml(s) {
+        const div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+    }
+
+    document.addEventListener('DOMContentLoaded', initComments);
+    </script>
+</body>
+</html>

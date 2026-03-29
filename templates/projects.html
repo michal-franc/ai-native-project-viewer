@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Projects</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/theme.js"></script>
+</head>
+<body>
+    <div class="header">
+        <div class="container header-inner">
+            <h1>Projects</h1>
+            <div class="theme-picker">
+                <button class="theme-btn" data-theme="dark" title="Dark"></button>
+                <button class="theme-btn" data-theme="dracula" title="Dracula"></button>
+                <button class="theme-btn" data-theme="light" title="Light"></button>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="project-grid">
+            {{range .Projects}}
+            <a href="/p/{{.Slug}}/" class="project-card">
+                <h2 class="project-card-name">{{.Name}}</h2>
+                <div class="project-card-stats">
+                    <span>{{.IssueCount}} issues</span>
+                    {{if .DocCount}}<span>{{.DocCount}} docs</span>{{end}}
+                </div>
+            </a>
+            {{end}}
+        </div>
+    </div>
+</body>
+</html>
