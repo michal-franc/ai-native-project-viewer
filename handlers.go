@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -59,6 +60,9 @@ var funcMap = template.FuncMap{
 	"safeHTML": func(s string) template.HTML {
 		return template.HTML(s)
 	},
+	"urlEncodeColor": func(s string) string {
+		return strings.ReplaceAll(s, "#", "%23")
+	},
 	"assigneeColor": func(name string) string {
 		if name == "" {
 			return ""
@@ -77,11 +81,20 @@ var funcMap = template.FuncMap{
 		}
 		return colors[h%len(colors)]
 	},
-	"linkIssueRefs": func(html string, prefix string) template.HTML {
-		re := regexp.MustCompile(`#(\d+)`)
+	"linkIssueRefs": func(html string, prefix string, slugMap map[string]string) template.HTML {
+		// Match #123, #my-slug, #system/my-slug
+		re := regexp.MustCompile(`#([a-zA-Z0-9][\w/.-]*)`)
 		result := re.ReplaceAllStringFunc(html, func(match string) string {
-			num := match[1:]
-			return fmt.Sprintf(`<a href="%s/issue/%s" class="issue-ref">%s</a>`, prefix, num, match)
+			ref := match[1:]
+			// Direct slug match (e.g. #combat/fix-heat-bug)
+			if slug, ok := slugMap[ref]; ok {
+				return fmt.Sprintf(`<a href="%s/issue/%s" class="issue-ref">%s</a>`, prefix, slug, match)
+			}
+			// Try lowercase
+			if slug, ok := slugMap[strings.ToLower(ref)]; ok {
+				return fmt.Sprintf(`<a href="%s/issue/%s" class="issue-ref">%s</a>`, prefix, slug, match)
+			}
+			return match
 		})
 		return template.HTML(result)
 	},
@@ -283,6 +296,7 @@ type DetailData struct {
 	Prefix      string
 	ProjectName string
 	Statuses    []string
+	SlugMap     map[string]string
 }
 
 func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *Project, prefix string) {
@@ -320,8 +334,20 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *Proj
 		}
 	}
 
+	// Build ref→slug map for #ref links
+	slugMap := map[string]string{}
+	for _, issue := range issues {
+		// By filename base (e.g. "123" from "123.md") for numeric refs
+		fname := strings.TrimSuffix(filepath.Base(issue.FilePath), ".md")
+		slugMap[fname] = issue.Slug
+		// By slug itself (e.g. "combat/fix-heat-bug") for slug refs
+		slugMap[issue.Slug] = issue.Slug
+		// By slug without system prefix (e.g. "fix-heat-bug")
+		slugMap[filepath.Base(issue.Slug)] = issue.Slug
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tmpl.ExecuteTemplate(w, "detail.html", DetailData{Issue: found, BackURL: backURL, Prefix: prefix, ProjectName: proj.Name, Statuses: statusOrder}); err != nil {
+	if err := s.tmpl.ExecuteTemplate(w, "detail.html", DetailData{Issue: found, BackURL: backURL, Prefix: prefix, ProjectName: proj.Name, Statuses: statusOrder, SlugMap: slugMap}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -339,6 +365,8 @@ type BoardData struct {
 	Total       int
 	Versions    []string
 	Version     string
+	Systems     []string
+	System      string
 	Assignees   []string
 	Assignee    string
 	Prefix      string
@@ -368,10 +396,14 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *Proje
 	}
 
 	versionSet := map[string]bool{}
+	systemSet := map[string]bool{}
 	assigneeSet := map[string]bool{}
 	for _, issue := range issues {
 		if issue.Version != "" {
 			versionSet[issue.Version] = true
+		}
+		if issue.System != "" {
+			systemSet[issue.System] = true
 		}
 		if issue.Assignee != "" {
 			assigneeSet[issue.Assignee] = true
@@ -382,6 +414,11 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *Proje
 		versions = append(versions, v)
 	}
 	sort.Strings(versions)
+	var systems []string
+	for s := range systemSet {
+		systems = append(systems, s)
+	}
+	sort.Strings(systems)
 	var assignees []string
 	for a := range assigneeSet {
 		assignees = append(assignees, a)
@@ -389,11 +426,15 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *Proje
 	sort.Strings(assignees)
 
 	versionFilter := r.URL.Query().Get("version")
+	systemFilter := r.URL.Query().Get("system")
 	assigneeFilter := r.URL.Query().Get("assignee")
 
 	var filtered []*Issue
 	for _, issue := range issues {
 		if versionFilter != "" && issue.Version != versionFilter {
+			continue
+		}
+		if systemFilter != "" && !strings.EqualFold(issue.System, systemFilter) {
 			continue
 		}
 		if assigneeFilter == "_claimed" && issue.Assignee == "" {
@@ -438,6 +479,8 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *Proje
 		Total:       len(issues),
 		Versions:    versions,
 		Version:     versionFilter,
+		Systems:     systems,
+		System:      systemFilter,
 		Assignees:   assignees,
 		Assignee:    assigneeFilter,
 		Prefix:      prefix,

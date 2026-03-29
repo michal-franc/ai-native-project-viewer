@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
@@ -24,10 +25,11 @@ type Issue struct {
 	Created  string   `yaml:"created"`
 
 	// Computed fields
-	Slug     string `yaml:"-"`
-	FilePath string `yaml:"-"`
-	BodyHTML string `yaml:"-"`
-	BodyRaw  string `yaml:"-"`
+	Slug     string    `yaml:"-"`
+	FilePath string    `yaml:"-"`
+	ModTime  time.Time `yaml:"-"`
+	BodyHTML string    `yaml:"-"`
+	BodyRaw  string    `yaml:"-"`
 }
 
 func ParseIssue(filename string, data []byte) (*Issue, error) {
@@ -47,8 +49,8 @@ func ParseIssue(filename string, data []byte) (*Issue, error) {
 	}
 	issue.BodyHTML = buf.String()
 
-	// Slug from filename (without extension)
-	issue.Slug = strings.TrimSuffix(filepath.Base(filename), ".md")
+	// Slug from title (slugified)
+	issue.Slug = slugify(issue.Title)
 
 	// Normalize
 	issue.Status = strings.ToLower(strings.TrimSpace(issue.Status))
@@ -83,11 +85,18 @@ func LoadIssues(dir string) ([]*Issue, error) {
 
 		issue.FilePath = path
 
-		// Use relative path as slug to avoid collisions across subdirs
-		relPath, _ := filepath.Rel(dir, path)
-		if relPath != "" {
-			issue.Slug = strings.TrimSuffix(relPath, ".md")
+		// File modification time for sorting
+		if info, err := d.Info(); err == nil {
+			issue.ModTime = info.ModTime()
 		}
+
+		// Prefix slug with system subdirectory for uniqueness
+		relDir := filepath.Dir(path)
+		baseDir, _ := filepath.Rel(dir, relDir)
+		if baseDir != "" && baseDir != "." {
+			issue.Slug = strings.ToLower(baseDir) + "/" + issue.Slug
+		}
+
 		issues = append(issues, issue)
 		return nil
 	})
@@ -95,9 +104,19 @@ func LoadIssues(dir string) ([]*Issue, error) {
 		return nil, fmt.Errorf("walking directory %s: %w", dir, err)
 	}
 
-	// Default sort: newest first
+	// Handle slug collisions by appending -2, -3, etc.
+	seen := map[string]int{}
+	for _, issue := range issues {
+		count := seen[issue.Slug]
+		seen[issue.Slug]++
+		if count > 0 {
+			issue.Slug = fmt.Sprintf("%s-%d", issue.Slug, count+1)
+		}
+	}
+
+	// Default sort: most recently modified first
 	sort.Slice(issues, func(i, j int) bool {
-		return issues[i].Created > issues[j].Created
+		return issues[i].ModTime.After(issues[j].ModTime)
 	})
 
 	return issues, nil

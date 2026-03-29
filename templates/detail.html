@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Issue.Title}} — {{.ProjectName}}</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='{{urlEncodeColor (statusColor .Issue.Status)}}'/></svg>">
     <link rel="stylesheet" href="/static/style.css">
     <script src="/static/theme.js"></script>
 </head>
@@ -35,7 +36,7 @@
                 </div>
                 <div class="detail-body" id="body-preview">
                     {{if .Issue.BodyHTML}}
-                    {{linkIssueRefs .Issue.BodyHTML .Prefix}}
+                    {{linkIssueRefs .Issue.BodyHTML .Prefix .SlugMap}}
                     {{else}}
                     <p style="color:var(--text-secondary)">No description provided.</p>
                     {{end}}
@@ -375,7 +376,41 @@
         return div.innerHTML;
     }
 
+    // --- Interactive checkboxes ---
+    function initCheckboxes() {
+        var preview = document.getElementById('body-preview');
+        if (!preview) return;
+
+        var boxes = preview.querySelectorAll('input[type="checkbox"]');
+        boxes.forEach(function(cb, idx) {
+            cb.disabled = false;
+            cb.dataset.idx = idx;
+            cb.addEventListener('change', function() {
+                toggleCheckbox(this);
+            });
+        });
+    }
+
+    function toggleCheckbox(cb) {
+        var textarea = document.getElementById('body-textarea');
+        var body = textarea.value;
+        var idx = parseInt(cb.dataset.idx);
+
+        // Find the nth checkbox pattern in the raw markdown
+        var count = 0;
+        var result = body.replace(/\[([ xX])\]/g, function(match, inner) {
+            if (count++ === idx) {
+                return cb.checked ? '[x]' : '[ ]';
+            }
+            return match;
+        });
+
+        textarea.value = result;
+        saveUpdate({ body: result });
+    }
+
     document.addEventListener('DOMContentLoaded', initComments);
+    document.addEventListener('DOMContentLoaded', initCheckboxes);
     </script>
 </body>
 </html>

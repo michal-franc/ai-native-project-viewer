@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.ProjectName}} — Board</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect x='1' y='1' width='4' height='14' rx='1' fill='%238b949e'/><rect x='6' y='1' width='4' height='10' rx='1' fill='%238b949e'/><rect x='11' y='1' width='4' height='12' rx='1' fill='%238b949e'/></svg>">
     <link rel="stylesheet" href="/static/style.css">
     <script src="/static/theme.js"></script>
 </head>
@@ -39,10 +40,19 @@
     </div>
 
     <form class="board-filter-bar" method="GET" action="{{.Prefix}}/board">
+        <input type="search" class="board-search" id="board-search" placeholder="Search issues..." oninput="filterBoardCards(this.value)">
+
         <select name="version" onchange="this.form.submit()">
             <option value="">All versions</option>
             {{range .Versions}}
             <option value="{{.}}" {{if eq . $.Version}}selected{{end}}>v{{.}}</option>
+            {{end}}
+        </select>
+
+        <select name="system" onchange="this.form.submit()">
+            <option value="">All systems</option>
+            {{range .Systems}}
+            <option value="{{.}}" {{if eq . $.System}}selected{{end}}>{{.}}</option>
             {{end}}
         </select>
 
@@ -55,17 +65,23 @@
             {{end}}
         </select>
 
-        {{if or .Version .Assignee}}
+        {{if or .Version .System .Assignee}}
         <a href="{{.Prefix}}/board" class="clear-btn">Clear filters</a>
         {{end}}
+
+        <button class="board-layout-btn" id="layout-toggle" title="Toggle layout" onclick="toggleBoardLayout()">
+            <svg id="layout-icon-h" width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2h4v12H1V2zm5 0h4v12H6V2zm5 0h4v12h-4V2z"/></svg>
+            <svg id="layout-icon-v" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" style="display:none"><path d="M2 1h12v4H2V1zm0 5h12v4H2V6zm0 5h12v4H2v-4z"/></svg>
+        </button>
     </form>
 
     <div class="board-container">
         <div class="board">
             {{range .Columns}}
             <div class="board-column" data-status="{{.Status}}">
-                <div class="board-column-header">
+                <div class="board-column-header" onclick="toggleColumn(this)">
                     <div class="board-column-header-top">
+                        <svg class="board-column-chevron" width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M4 2l4 4-4 4"/></svg>
                         <span class="board-column-dot" style="border-color:{{statusColor .Status}}"></span>
                         <span class="board-column-title">{{.Status}}</span>
                         <span class="board-column-count">{{len .Issues}}</span>
@@ -107,6 +123,70 @@
     <div class="save-toast" id="save-toast">Saved</div>
 
     <script>
+    // Board layout toggle
+    function applyBoardLayout(layout) {
+        var container = document.querySelector('.board-container');
+        var iconH = document.getElementById('layout-icon-h');
+        var iconV = document.getElementById('layout-icon-v');
+        if (layout === 'vertical') {
+            container.classList.add('board-vertical');
+            iconH.style.display = 'none';
+            iconV.style.display = '';
+        } else {
+            container.classList.remove('board-vertical');
+            iconH.style.display = '';
+            iconV.style.display = 'none';
+        }
+    }
+
+    function toggleBoardLayout() {
+        var current = localStorage.getItem('board-layout') || 'horizontal';
+        var next = current === 'horizontal' ? 'vertical' : 'horizontal';
+        localStorage.setItem('board-layout', next);
+        applyBoardLayout(next);
+    }
+
+    applyBoardLayout(localStorage.getItem('board-layout') || 'horizontal');
+
+    // Column collapse
+    function toggleColumn(header) {
+        var col = header.closest('.board-column');
+        col.classList.toggle('collapsed');
+        // Save collapsed state
+        var collapsed = JSON.parse(localStorage.getItem('board-collapsed') || '{}');
+        var status = col.dataset.status;
+        if (col.classList.contains('collapsed')) {
+            collapsed[status] = true;
+        } else {
+            delete collapsed[status];
+        }
+        localStorage.setItem('board-collapsed', JSON.stringify(collapsed));
+    }
+
+    // Restore collapsed state
+    (function() {
+        var collapsed = JSON.parse(localStorage.getItem('board-collapsed') || '{}');
+        document.querySelectorAll('.board-column').forEach(function(col) {
+            if (collapsed[col.dataset.status]) {
+                col.classList.add('collapsed');
+            }
+        });
+    })();
+
+    // Board search
+    function filterBoardCards(query) {
+        query = query.toLowerCase();
+        document.querySelectorAll('.board-card').forEach(function(card) {
+            var text = card.textContent.toLowerCase();
+            card.style.display = (!query || text.indexOf(query) !== -1) ? '' : 'none';
+        });
+        // Update counts
+        document.querySelectorAll('.board-column').forEach(function(col) {
+            var visible = col.querySelectorAll('.board-card:not([style*="display: none"])').length;
+            col.querySelector('.board-column-count').textContent = visible;
+        });
+    }
+
     const prefix = "{{.Prefix}}";
 
     // Shift+scroll converts vertical scroll to horizontal on the board
