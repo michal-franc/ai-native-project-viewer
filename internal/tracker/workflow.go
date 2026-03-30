@@ -36,7 +36,6 @@ func LoadWorkflow(path string) (*WorkflowConfig, error) {
 func DefaultWorkflow() *WorkflowConfig {
 	return &WorkflowConfig{
 		Statuses: []WorkflowStatus{
-			{Name: "none", Description: ""},
 			{Name: "idea", Description: "Raw idea, needs exploration"},
 			{
 				Name:        "in design",
@@ -59,9 +58,13 @@ func DefaultWorkflow() *WorkflowConfig {
 				Validation:  []string{"all_checkboxes_checked"},
 			},
 			{
+				Name:        "human-testing",
+				Description: "Manual verification by humans",
+				Validation:  []string{"has_test_plan", "has_comment_prefix: tests:"},
+			},
+			{
 				Name:        "documentation",
 				Description: "Being documented",
-				Validation:  []string{"has_test_plan", "has_comment_prefix: tests:"},
 			},
 			{
 				Name:        "done",

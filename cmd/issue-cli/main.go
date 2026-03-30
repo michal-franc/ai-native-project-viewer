@@ -332,7 +332,7 @@ Issues are .md files in issues/<System>/ directories.
 
 == Workflow ==
 Every issue follows this lifecycle:
-  idea → in design → backlog → in progress → testing → documentation → done
+  idea → in design → backlog → in progress → testing → human-testing → documentation → done
 
 == What each status means ==
   idea           Raw concept, just a title and rough description
@@ -340,6 +340,7 @@ Every issue follows this lifecycle:
   backlog        Designed and ready to implement
   in progress    Actively being worked on
   testing        Implementation done, verifying correctness
+  human-testing  Manual verification by humans
   documentation  Updating docs to reflect the change
   done           Shipped, tested, documented
 
@@ -391,14 +392,15 @@ Run 'issue-cli process <topic>' for details:
 	case "transitions":
 		fmt.Print(`== Transition Rules ==
 
-  → idea                 Title only
-  idea → in design       Body must have content
-  in design → backlog    At least one [ ] checkbox (acceptance criteria)
-  backlog → in progress  Must have an assignee (use: issue-cli start — it claims and transitions)
-  in progress → testing  All [x] checkboxes must be checked
-  testing → documentation Must have ## Test Plan with ### Automated and ### Manual
-                          Must have a test results comment
-  documentation → done   Must have a "docs:" comment
+  → idea                      Title only
+  idea → in design            Body must have content
+  in design → backlog         At least one [ ] checkbox (acceptance criteria)
+  backlog → in progress       Must have an assignee (use: issue-cli start)
+  in progress → testing       All [x] checkboxes must be checked
+  testing → human-testing     Must have ## Test Plan with ### Automated and ### Manual
+                               Must have a test results comment
+  human-testing → documentation  Manual verification by humans
+  documentation → done        Must have a "docs:" comment
 
 Transitions are strict — you cannot skip statuses.
 `)

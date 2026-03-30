@@ -16,16 +16,16 @@ import (
 
 // StatusOrder defines the workflow lifecycle.
 var StatusOrder = []string{
-	"none", "idea", "in design", "backlog", "in progress", "testing", "documentation", "done",
+	"idea", "in design", "backlog", "in progress", "testing", "human-testing", "documentation", "done",
 }
 
 var StatusDescriptions = map[string]string{
-	"none":          "",
 	"idea":          "Raw idea, needs exploration",
 	"in design":     "Being designed and specced out",
 	"backlog":       "Ready to work on",
 	"in progress":   "Actively being implemented",
 	"testing":       "Under verification",
+	"human-testing": "Manual verification by humans",
 	"documentation": "Being documented",
 	"done":          "Completed",
 }

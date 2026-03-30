@@ -123,7 +123,7 @@ func TestProjectLoadWorkflow_FallbackToDefault(t *testing.T) {
 	if len(order) == 0 {
 		t.Fatal("expected default workflow statuses")
 	}
-	if order[0] != "none" {
-		t.Errorf("first status = %q, want %q (default workflow)", order[0], "none")
+	if order[0] != "idea" {
+		t.Errorf("first status = %q, want %q (default workflow)", order[0], "idea")
 	}
 }

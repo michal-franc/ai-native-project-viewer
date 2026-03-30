@@ -23,12 +23,12 @@ var staticFS embed.FS
 var funcMap = template.FuncMap{
 	"statusColor": func(s string) string {
 		colors := map[string]string{
-			"none":          "#6b7280",
 			"idea":          "#8b5cf6",
 			"in design":     "#3b82f6",
 			"backlog":       "#64748b",
 			"in progress":   "#eab308",
 			"testing":       "#f97316",
+			"human-testing": "#ec4899",
 			"documentation": "#14b8a6",
 			"done":          "#22c55e",
 		}
@@ -38,7 +38,7 @@ var funcMap = template.FuncMap{
 		return "#6b7280"
 	},
 	"statusTextColor": func(s string) string {
-		dark := map[string]bool{"in progress": true, "testing": true}
+		dark := map[string]bool{"in progress": true, "testing": true, "human-testing": true}
 		if dark[s] {
 			return "#000000"
 		}

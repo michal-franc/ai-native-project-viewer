@@ -14,8 +14,8 @@ func TestDefaultWorkflow(t *testing.T) {
 	}
 
 	order := wf.GetStatusOrder()
-	if order[0] != "none" {
-		t.Errorf("first status = %q, want %q", order[0], "none")
+	if order[0] != "idea" {
+		t.Errorf("first status = %q, want %q", order[0], "idea")
 	}
 	if order[len(order)-1] != "done" {
 		t.Errorf("last status = %q, want %q", order[len(order)-1], "done")
@@ -31,7 +31,7 @@ func TestGetStatusOrder(t *testing.T) {
 	wf := DefaultWorkflow()
 	order := wf.GetStatusOrder()
 
-	expected := []string{"none", "idea", "in design", "backlog", "in progress", "testing", "documentation", "done"}
+	expected := []string{"idea", "in design", "backlog", "in progress", "testing", "human-testing", "documentation", "done"}
 	if len(order) != len(expected) {
 		t.Fatalf("got %d statuses, want %d", len(order), len(expected))
 	}
@@ -49,9 +49,11 @@ func TestGetStatusIndex(t *testing.T) {
 		status string
 		want   int
 	}{
-		{"none", 0},
-		{"idea", 1},
+		{"idea", 0},
+		{"in design", 1},
+		{"human-testing", 5},
 		{"done", 7},
+		{"none", -1},
 		{"unknown", -1},
 	}
 
@@ -73,12 +75,14 @@ func TestIsValidTransition(t *testing.T) {
 	}{
 		{"idea", "in design", true},
 		{"in progress", "testing", true},
-		{"idea", "done", false},       // skip
-		{"done", "idea", false},       // backwards
-		{"unknown", "idea", false},    // unknown from
-		{"idea", "unknown", false},    // unknown to
-		{"idea", "idea", false},       // same
-		{"none", "idea", true},
+		{"idea", "done", false},           // skip
+		{"done", "idea", false},           // backwards
+		{"unknown", "idea", false},        // unknown from
+		{"idea", "unknown", false},        // unknown to
+		{"idea", "idea", false},           // same
+		{"none", "idea", false},           // none no longer exists
+		{"testing", "human-testing", true},
+		{"human-testing", "documentation", true},
 		{"documentation", "done", true},
 	}
 
@@ -94,11 +98,14 @@ func TestGetStatusDescriptions(t *testing.T) {
 	wf := DefaultWorkflow()
 	descs := wf.GetStatusDescriptions()
 
-	if descs["none"] != "" {
-		t.Errorf("none description = %q, want empty", descs["none"])
+	if _, ok := descs["none"]; ok {
+		t.Errorf("none should not be in descriptions")
 	}
 	if descs["backlog"] != "Ready to work on" {
 		t.Errorf("backlog description = %q", descs["backlog"])
+	}
+	if descs["human-testing"] != "Manual verification by humans" {
+		t.Errorf("human-testing description = %q", descs["human-testing"])
 	}
 }
 
@@ -256,25 +263,42 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("has_test_plan passes", func(t *testing.T) {
+	t.Run("has_test_plan passes for human-testing", func(t *testing.T) {
 		issue := &Issue{BodyRaw: "## Test Plan\n### Automated\nTests\n### Manual\nSteps"}
 		comments := []Comment{{Text: "tests: all pass"}}
-		err := wf.Validate(issue, "documentation", comments)
+		err := wf.Validate(issue, "human-testing", comments)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
-	t.Run("has_test_plan fails", func(t *testing.T) {
+	t.Run("has_test_plan fails for human-testing", func(t *testing.T) {
 		issue := &Issue{BodyRaw: "No test plan"}
 		comments := []Comment{{Text: "tests: all pass"}}
-		err := wf.Validate(issue, "documentation", comments)
+		err := wf.Validate(issue, "human-testing", comments)
 		if err == nil {
 			t.Fatal("expected error")
 		}
 	})
 
-	t.Run("has_comment_prefix passes", func(t *testing.T) {
+	t.Run("has_comment_prefix tests: fails for human-testing", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "## Test Plan\n### Automated\nTests\n### Manual\nSteps"}
+		comments := []Comment{{Text: "some other comment"}}
+		err := wf.Validate(issue, "human-testing", comments)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+
+	t.Run("documentation has no validation", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "content"}
+		err := wf.Validate(issue, "documentation", nil)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("has_comment_prefix docs: passes for done", func(t *testing.T) {
 		issue := &Issue{BodyRaw: "content"}
 		comments := []Comment{{Text: "docs: updated docs"}}
 		err := wf.Validate(issue, "done", comments)
@@ -283,7 +307,7 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("has_comment_prefix fails", func(t *testing.T) {
+	t.Run("has_comment_prefix docs: fails for done", func(t *testing.T) {
 		issue := &Issue{BodyRaw: "content"}
 		comments := []Comment{{Text: "some other comment"}}
 		err := wf.Validate(issue, "done", comments)
@@ -308,10 +332,12 @@ func TestNextStatus(t *testing.T) {
 		current string
 		want    string
 	}{
-		{"none", "idea"},
 		{"idea", "in design"},
+		{"testing", "human-testing"},
+		{"human-testing", "documentation"},
 		{"documentation", "done"},
 		{"done", ""},
+		{"none", ""},
 		{"unknown", ""},
 	}
 

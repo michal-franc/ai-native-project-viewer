@@ -38,7 +38,7 @@ Open `http://localhost:8080` to see a sample project with issues and docs.
 ### CLI (`issue-cli`)
 
 - **Bot-friendly** — designed for AI agents to manage issues via commands
-- **Workflow enforcement** — strict status lifecycle: `idea` → `in design` → `backlog` → `in progress` → `testing` → `documentation` → `done`
+- **Workflow enforcement** — strict status lifecycle: `idea` → `in design` → `backlog` → `in progress` → `testing` → `human-testing` → `documentation` → `done`
 - **Auto agent naming** — `claim` and `start` default assignee to `agent-<ticket-slug>`
 - **Project version** — set `version` in `project.yaml` to auto-filter `list` and `next` commands
 - **Status aliases** — `--status open` (all non-done) and `--status closed` (done only)
@@ -196,7 +196,7 @@ Description in markdown. Supports tables, checkboxes, and `#123` issue reference
 
 ### Statuses
 
-`idea` → `in design` → `backlog` → `in progress` → `testing` → `documentation` → `done`
+`idea` → `in design` → `backlog` → `in progress` → `testing` → `human-testing` → `documentation` → `done`
 
 ## Documentation Pages
 

@@ -460,9 +460,10 @@ func TestStatusIndex(t *testing.T) {
 		status string
 		want   int
 	}{
-		{"none", 0},
-		{"idea", 1},
+		{"idea", 0},
+		{"in design", 1},
 		{"done", 7},
+		{"none", -1},
 		{"unknown", -1},
 	}
 
@@ -482,11 +483,12 @@ func TestValidTransition(t *testing.T) {
 	}{
 		{"idea", "in design", true},
 		{"in progress", "testing", true},
-		{"idea", "done", false},     // skip not allowed
-		{"done", "idea", false},     // backwards not allowed
-		{"unknown", "idea", false},  // unknown status
-		{"idea", "unknown", false},  // unknown status
-		{"none", "idea", true},      // first transition
+		{"idea", "done", false},         // skip not allowed
+		{"done", "idea", false},         // backwards not allowed
+		{"unknown", "idea", false},      // unknown status
+		{"idea", "unknown", false},      // unknown status
+		{"none", "idea", false},         // none no longer exists
+		{"testing", "human-testing", true},
 		{"documentation", "done", true},
 	}
 
