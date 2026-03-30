@@ -85,6 +85,9 @@
                         <span class="board-column-dot" style="border-color:{{statusColor .Status}}"></span>
                         <span class="board-column-title">{{.Status}}</span>
                         <span class="board-column-count">{{len .Issues}}</span>
+                        <button class="board-column-add" title="Add issue" onclick="event.stopPropagation(); openCreateModal('{{.Status}}')">
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M7.25 1a.75.75 0 01.75.75V7h5.25a.75.75 0 010 1.5H8v5.25a.75.75 0 01-1.5 0V8.5H1.25a.75.75 0 010-1.5H6.5V1.75A.75.75 0 017.25 1z"/></svg>
+                        </button>
                     </div>
                     {{if .Description}}
                     <div class="board-column-desc">{{.Description}}</div>
@@ -92,31 +95,72 @@
                 </div>
                 <div class="board-column-cards">
                     {{range .Issues}}
-                    <a href="{{$.Prefix}}/issue/{{.Slug}}?from=board{{if $.Version}}%3Fversion%3D{{$.Version}}{{end}}" class="board-card{{if .Assignee}} board-card-assigned{{end}}" draggable="true" data-slug="{{.Slug}}" {{if .Assignee}}style="border-left: 3px solid {{assigneeColor .Assignee}}"{{end}}>
-                        <div class="board-card-id">
-                            <span class="board-card-dot" style="border-color:{{statusColor .Status}}"></span>
-                            {{if .System}}<span>{{.System}}</span>{{end}}
-                            <span class="board-card-slug">#{{.Slug}}</span>
-                        </div>
-                        <div class="board-card-title">{{.Title}}</div>
-                        {{if .Labels}}
-                        <div class="board-card-labels">
-                            {{range .Labels}}
-                            <span class="board-label">{{.}}</span>
+                    <div class="board-card-wrapper" data-slug="{{.Slug}}">
+                        <a href="{{$.Prefix}}/issue/{{.Slug}}?from=board{{if $.Version}}%3Fversion%3D{{$.Version}}{{end}}" class="board-card{{if .Assignee}} board-card-assigned{{end}}" draggable="true" data-slug="{{.Slug}}" {{if .Assignee}}style="border-left: 3px solid {{assigneeColor .Assignee}}"{{end}}>
+                            <div class="board-card-id">
+                                <span class="board-card-dot" style="border-color:{{statusColor .Status}}"></span>
+                                {{if .System}}<span>{{.System}}</span>{{end}}
+                                <span class="board-card-slug">#{{.Slug}}</span>
+                            </div>
+                            <div class="board-card-title">{{.Title}}</div>
+                            {{if .Labels}}
+                            <div class="board-card-labels">
+                                {{range .Labels}}
+                                <span class="board-label">{{.}}</span>
+                                {{end}}
+                            </div>
                             {{end}}
-                        </div>
-                        {{end}}
-                        {{if .Assignee}}
-                        <div class="board-card-assignee">
-                            <span class="assignee-dot" style="background:{{assigneeColor .Assignee}}"></span>
-                            {{.Assignee}}
-                        </div>
-                        {{end}}
-                    </a>
+                            {{if .Assignee}}
+                            <div class="board-card-assignee">
+                                <span class="assignee-dot" style="background:{{assigneeColor .Assignee}}"></span>
+                                {{.Assignee}}
+                            </div>
+                            {{end}}
+                        </a>
+                        <button class="board-card-delete" title="Delete issue" onclick="event.stopPropagation(); confirmDelete('{{.Slug}}', '{{.Title}}')">
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11 1.75V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM6.5 1.75v1.25h3V1.75a.25.25 0 00-.25-.25h-2.5a.25.25 0 00-.25.25zM4.997 6.178a.75.75 0 10-1.493.144L4.5 13.25a.25.25 0 00.25.25h6.5a.25.25 0 00.25-.25l.996-6.928a.75.75 0 10-1.493-.144L10.08 12.5H5.92L4.997 6.178z"/></svg>
+                        </button>
+                    </div>
                     {{end}}
                 </div>
             </div>
             {{end}}
+        </div>
+    </div>
+
+    <!-- Delete confirmation modal -->
+    <div class="modal-overlay" id="delete-modal" style="display:none">
+        <div class="modal">
+            <div class="modal-title">Delete issue?</div>
+            <div class="modal-body">
+                Are you sure you want to delete <strong id="delete-issue-title"></strong>?<br>
+                This cannot be undone.
+            </div>
+            <div class="modal-actions">
+                <button class="modal-btn modal-btn-cancel" onclick="closeDeleteModal()">Cancel</button>
+                <button class="modal-btn modal-btn-danger" id="delete-confirm-btn">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create issue modal -->
+    <div class="modal-overlay" id="create-modal" style="display:none">
+        <div class="modal">
+            <div class="modal-title">New issue</div>
+            <div class="modal-body">
+                <input type="text" id="create-title" class="modal-input" placeholder="Issue title" autofocus>
+                <select id="create-system" class="modal-input">
+                    <option value="">No system</option>
+                    {{range .Systems}}
+                    <option value="{{.}}">{{.}}</option>
+                    {{end}}
+                </select>
+                <input type="hidden" id="create-status" value="idea">
+            </div>
+            <div class="modal-actions">
+                <button class="modal-btn modal-btn-cancel" onclick="closeCreateModal()">Cancel</button>
+                <button class="modal-btn modal-btn-primary" id="create-confirm-btn" onclick="submitCreate()">Create</button>
+            </div>
         </div>
     </div>
 
@@ -176,13 +220,12 @@
     // Board search
     function filterBoardCards(query) {
         query = query.toLowerCase();
-        document.querySelectorAll('.board-card').forEach(function(card) {
-            var text = card.textContent.toLowerCase();
-            card.style.display = (!query || text.indexOf(query) !== -1) ? '' : 'none';
+        document.querySelectorAll('.board-card-wrapper').forEach(function(wrapper) {
+            var text = wrapper.textContent.toLowerCase();
+            wrapper.style.display = (!query || text.indexOf(query) !== -1) ? '' : 'none';
         });
-        // Update counts
         document.querySelectorAll('.board-column').forEach(function(col) {
-            var visible = col.querySelectorAll('.board-card:not([style*="display: none"])').length;
+            var visible = col.querySelectorAll('.board-card-wrapper:not([style*="display: none"])').length;
             col.querySelector('.board-column-count').textContent = visible;
         });
     }
@@ -199,28 +242,26 @@
     }, { passive: false });
 
     // Drag and drop
-    let draggedCard = null;
+    let draggedWrapper = null;
 
     document.querySelectorAll('.board-card').forEach(card => {
         card.addEventListener('dragstart', function(e) {
-            draggedCard = this;
+            draggedWrapper = this.closest('.board-card-wrapper');
             this.classList.add('dragging');
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('text/plain', this.dataset.slug);
-            // Prevent navigation on drag
             setTimeout(() => { this.style.opacity = '0.4'; }, 0);
         });
 
         card.addEventListener('dragend', function() {
             this.classList.remove('dragging');
             this.style.opacity = '';
-            draggedCard = null;
+            draggedWrapper = null;
             document.querySelectorAll('.board-column').forEach(col => {
                 col.classList.remove('drag-over');
             });
         });
 
-        // Prevent click navigation when finishing a drag
         card.addEventListener('click', function(e) {
             if (this.classList.contains('just-dropped')) {
                 e.preventDefault();
@@ -251,11 +292,11 @@
             const slug = e.dataTransfer.getData('text/plain');
             const newStatus = column.dataset.status;
 
-            if (!slug || !draggedCard) return;
+            if (!slug || !draggedWrapper) return;
 
             // Move the card visually
-            cardArea.appendChild(draggedCard);
-            draggedCard.classList.add('just-dropped');
+            cardArea.appendChild(draggedWrapper);
+            draggedWrapper.querySelector('.board-card').classList.add('just-dropped');
 
             // Update column counts
             updateColumnCounts();
@@ -298,10 +339,10 @@
             const slug = e.dataTransfer.getData('text/plain');
             const newStatus = column.dataset.status;
 
-            if (!slug || !draggedCard) return;
+            if (!slug || !draggedWrapper) return;
 
-            cardArea.appendChild(draggedCard);
-            draggedCard.classList.add('just-dropped');
+            cardArea.appendChild(draggedWrapper);
+            draggedWrapper.querySelector('.board-card').classList.add('just-dropped');
             updateColumnCounts();
 
             fetch(prefix + '/issue/' + slug, {
@@ -319,9 +360,89 @@
 
     function updateColumnCounts() {
         document.querySelectorAll('.board-column').forEach(col => {
-            const count = col.querySelectorAll('.board-card').length;
+            const count = col.querySelectorAll('.board-card-wrapper').length;
             col.querySelector('.board-column-count').textContent = count;
         });
+    }
+
+    // Delete issue
+    function confirmDelete(slug, title) {
+        document.getElementById('delete-issue-title').textContent = title;
+        document.getElementById('delete-modal').style.display = '';
+        document.getElementById('delete-confirm-btn').onclick = function() {
+            fetch(prefix + '/issue/' + slug + '/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            }).then(res => {
+                closeDeleteModal();
+                if (res.ok) {
+                    const wrapper = document.querySelector('.board-card-wrapper[data-slug="' + slug + '"]');
+                    if (wrapper) wrapper.remove();
+                    updateColumnCounts();
+                    showToast('Deleted');
+                } else {
+                    showToast('Error deleting', true);
+                }
+            });
+        };
+    }
+
+    function closeDeleteModal() {
+        document.getElementById('delete-modal').style.display = 'none';
+    }
+
+    // Create issue
+    function openCreateModal(status) {
+        document.getElementById('create-status').value = status;
+        document.getElementById('create-title').value = '';
+        document.getElementById('create-modal').style.display = '';
+        setTimeout(() => document.getElementById('create-title').focus(), 50);
+    }
+
+    function closeCreateModal() {
+        document.getElementById('create-modal').style.display = 'none';
+    }
+
+    function submitCreate() {
+        const title = document.getElementById('create-title').value.trim();
+        if (!title) return;
+        const status = document.getElementById('create-status').value;
+        const system = document.getElementById('create-system').value;
+
+        fetch(prefix + '/issues/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: title, status: status, system: system })
+        }).then(res => {
+            closeCreateModal();
+            if (res.ok) {
+                showToast('Created');
+                setTimeout(() => location.reload(), 300);
+            } else {
+                showToast('Error creating', true);
+            }
+        });
+    }
+
+    // Allow Enter to submit create modal
+    document.getElementById('create-title').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') submitCreate();
+        if (e.key === 'Escape') closeCreateModal();
+    });
+
+    // Escape closes modals
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') {
+            closeDeleteModal();
+            closeCreateModal();
+        }
+    });
+
+    function showToast(msg, isError) {
+        const toast = document.getElementById('save-toast');
+        toast.textContent = msg;
+        toast.className = 'save-toast ' + (isError ? 'show error' : 'show');
+        setTimeout(() => { toast.className = 'save-toast'; }, 1500);
     }
     </script>
 </body>

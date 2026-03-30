@@ -1333,6 +1333,168 @@ a:hover { text-decoration: underline; }
     border-color: var(--text-link);
 }
 
+/* Board card wrapper (for delete button positioning) */
+.board-card-wrapper {
+    position: relative;
+}
+
+.board-card-delete {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s, background 0.15s;
+    z-index: 2;
+}
+
+.board-card-wrapper:hover .board-card-delete {
+    opacity: 1;
+}
+
+.board-card-delete:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.1);
+}
+
+/* Column add button */
+.board-column-add {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    margin-left: auto;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.board-column-header:hover .board-column-add {
+    opacity: 1;
+}
+
+.board-column-add:hover {
+    color: var(--accent);
+    background: rgba(56, 132, 244, 0.1);
+}
+
+/* Modals */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    min-width: 360px;
+    max-width: 480px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+.modal-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--text);
+}
+
+.modal-body {
+    font-size: 14px;
+    color: var(--text-secondary);
+    margin-bottom: 20px;
+    line-height: 1.6;
+}
+
+.modal-input {
+    display: block;
+    width: 100%;
+    padding: 8px 12px;
+    margin-bottom: 10px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 14px;
+    box-sizing: border-box;
+}
+
+.modal-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+select.modal-input {
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='%238b949e'%3E%3Cpath d='M6 8.5L1 3.5h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 30px;
+}
+
+select.modal-input option {
+    background: var(--bg-secondary);
+    color: var(--text);
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.modal-btn {
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    font-size: 14px;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.modal-btn-cancel {
+    background: var(--bg-primary);
+    color: var(--text);
+}
+
+.modal-btn-cancel:hover {
+    background: var(--bg-secondary);
+}
+
+.modal-btn-danger {
+    background: #ef4444;
+    color: #fff;
+    border-color: #ef4444;
+}
+
+.modal-btn-danger:hover {
+    background: #dc2626;
+}
+
+.modal-btn-primary {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+
+.modal-btn-primary:hover {
+    opacity: 0.9;
+}
+
 /* Save toast */
 .save-toast {
     position: fixed;

@@ -172,6 +172,10 @@ func (s *Server) handleProjectRoutes(w http.ResponseWriter, r *http.Request) {
 		s.handleToggleComment(w, r, proj, prefix)
 	case strings.HasPrefix(rest, "issue/") && strings.HasSuffix(rest, "/comments/delete") && r.Method == http.MethodPost:
 		s.handleDeleteComment(w, r, proj, prefix)
+	case strings.HasPrefix(rest, "issue/") && strings.HasSuffix(rest, "/delete") && r.Method == http.MethodPost:
+		s.handleDeleteIssue(w, r, proj, prefix)
+	case rest == "issues/create" && r.Method == http.MethodPost:
+		s.handleCreateIssue(w, r, proj, prefix)
 	case strings.HasPrefix(rest, "issue/") && r.Method == http.MethodGet:
 		s.handleDetail(w, r, proj, prefix)
 	case strings.HasPrefix(rest, "issue/") && r.Method == http.MethodPost:
@@ -715,6 +719,58 @@ func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request, pro
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// --- Delete Issue ---
+
+func (s *Server) handleDeleteIssue(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	slug := strings.TrimPrefix(r.URL.Path, prefix+"/issue/")
+	slug = strings.TrimSuffix(slug, "/delete")
+
+	issue := s.findIssueBySlug(proj, slug)
+	if issue == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	if err := tracker.DeleteIssue(issue.FilePath); err != nil {
+		http.Error(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// --- Create Issue ---
+
+type CreateIssueRequest struct {
+	Title  string `json:"title"`
+	Status string `json:"status"`
+	System string `json:"system"`
+}
+
+func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	var req CreateIssueRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if req.Title == "" {
+		http.Error(w, "title is required", http.StatusBadRequest)
+		return
+	}
+
+	_, slug, err := tracker.CreateIssueFile(proj.IssueDir, req.Title, req.Status, req.System)
+	if err != nil {
+		http.Error(w, "create failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "slug": slug})
 }
 
 // --- Filters ---

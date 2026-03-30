@@ -22,14 +22,32 @@ Open `http://localhost:8080` to see a sample project with issues and docs.
 
 ## Features
 
+### Web UI
+
 - **List view** with filters (status, system, priority, labels, assignee, search)
-- **Kanban board** with drag-and-drop to change status, version/assignee filters
+- **Kanban board** with drag-and-drop to change status, version/system/assignee filters
+- **Create issues** from the board — click "+" on any column header
+- **Delete issues** from the board — hover a card and click the trash icon (with confirmation)
 - **Documentation** viewer with folder tree sidebar
 - **Multi-project** support via `projects.yaml`
 - **Inline editing** — change status, priority, version, labels, assignee, and body from the UI
 - **Inline comments** on issue body blocks with open/done status
 - **Issue references** — `#123` auto-links to other issues
 - **Theme picker** — dark, dracula, light
+
+### CLI (`issue-cli`)
+
+- **Bot-friendly** — designed for AI agents to manage issues via commands
+- **Workflow enforcement** — strict status lifecycle: `idea` → `in design` → `backlog` → `in progress` → `testing` → `documentation` → `done`
+- **Auto agent naming** — `claim` and `start` default assignee to `agent-<ticket-slug>`
+- **Project version** — set `version` in `project.yaml` to auto-filter `list` and `next` commands
+- **Status aliases** — `--status open` (all non-done) and `--status closed` (done only)
+- **Category alias** — `--category` works as alias for `--system`
+- **Checkbox management** — `check` command to tick off checklist items by text match
+- **Configurable workflows** — custom statuses, templates, and validation rules via `workflow.yaml`
+
+### Syncing
+
 - **GitHub sync** script to import from GitHub Projects
 
 ## Quick Start
@@ -40,6 +58,85 @@ go build
 ```
 
 Open `http://localhost:8080`.
+
+## CLI Tool
+
+Install:
+
+```bash
+make install
+```
+
+### Commands
+
+| Command                | Description                                                  |
+|:-----------------------|:-------------------------------------------------------------|
+| `process`              | Learn how the project works (run this first)                 |
+| `start <slug>`        | Claim issue, transition to in-progress, show next steps      |
+| `next --version <v>`  | Find work for a version (backlog + in-progress + testing)    |
+| `next --design`       | Find ideas and in-design issues needing design work          |
+| `context <slug>`      | Full context dump (body, comments, checklist)                |
+| `create`              | Create a new issue                                           |
+| `transition <slug>`   | Move issue to next status (strict ordering)                  |
+| `claim <slug>`        | Set assignee (defaults to `agent-<slug>`)                    |
+| `unclaim <slug>`      | Remove assignee                                              |
+| `done <slug>`         | Mark as done (must be in documentation status)               |
+| `check <slug> <text>` | Check off a checkbox item by text match                      |
+| `comment <slug>`      | Add a comment                                                |
+| `checklist <slug>`    | Show checkbox progress                                       |
+| `list`                | List issues with filters                                     |
+| `search <query>`      | Search across titles, bodies, and statuses                   |
+| `stats`               | Project health overview                                      |
+
+### Global Flags
+
+| Flag              | Description                                      |
+|:------------------|:-------------------------------------------------|
+| `--config <path>` | Path to `projects.yaml` (default: `projects.yaml`) |
+| `--project <slug>` | Select project (default: first in config)       |
+| `--json`          | Output as JSON                                   |
+
+### List Filters
+
+| Flag                | Description                                           |
+|:--------------------|:------------------------------------------------------|
+| `--status <name>`   | Filter by status (`open`, `closed`, or exact name)    |
+| `--system <name>`   | Filter by system                                      |
+| `--category <name>` | Alias for `--system`                                  |
+| `--assignee <name>` | Filter by assignee                                    |
+| `--version <v>`     | Filter by version (auto-inferred from `project.yaml`) |
+
+### Workflow Enforcement (CLI only)
+
+The CLI enforces strict status progression for bots:
+
+- **`create`** — only allows `idea` or `in design` status
+- **`start`** — only transitions from `backlog` to `in progress`
+- **`transition`** — sequential only, one step at a time
+- **`done`** — only from `documentation` status
+
+The web UI (drag-and-drop) has no restrictions — humans have full power.
+
+### Project Version
+
+Set a default version in `project.yaml` at your project root:
+
+```yaml
+version: "0.1"
+```
+
+This auto-filters `list` and `next` commands so bots don't need `--version` every time. Also works in `projects.yaml`:
+
+```yaml
+projects:
+  - name: "My Project"
+    issues: "./issues"
+    version: "0.1"
+```
+
+### Agent Naming
+
+When `claim` or `start` is called without `--assignee`, the CLI assigns `agent-<ticket-slug>` (e.g., `agent-fix-heat-overflow`). Override with `--assignee` or the `AGENT_NAME` env var.
 
 ## Multi-Project Mode
 
@@ -125,14 +222,14 @@ Frontmatter is optional. Title defaults to the filename. `order` controls sort p
 
 Downloads all items from a GitHub Project and writes them as `issues/<System>/<number>.md`.
 
-## CLI Flags
+## Server CLI Flags
 
-| Flag       | Default      | Description                                |
-|:-----------|:-------------|:-------------------------------------------|
-| `-config`  | —            | Path to `projects.yaml` (multi-project)    |
-| `-dir`     | `./issues`   | Issues directory (single-project mode)     |
-| `-docs`    | `./docs`     | Docs directory (single-project mode)       |
-| `-port`    | `8080`       | HTTP port                                  |
+| Flag      | Default    | Description                             |
+|:----------|:-----------|:----------------------------------------|
+| `-config` | —          | Path to `projects.yaml` (multi-project) |
+| `-dir`    | `./issues` | Issues directory (single-project mode)  |
+| `-docs`   | `./docs`   | Docs directory (single-project mode)    |
+| `-port`   | `8080`     | HTTP port                               |
 
 ## Inline Comments
 
@@ -146,10 +243,18 @@ Comments are stored at the bottom of issue files in an HTML comment block (invis
 
 ## API
 
-| Method | Path                                      | Description          |
-|:-------|:------------------------------------------|:---------------------|
-| POST   | `/p/<project>/issue/<slug>`               | Update frontmatter   |
-| GET    | `/p/<project>/issue/<slug>/comments`      | List comments        |
-| POST   | `/p/<project>/issue/<slug>/comments`      | Add comment          |
+| Method | Path                                        | Description         |
+|:-------|:--------------------------------------------|:--------------------|
+| POST   | `/p/<project>/issue/<slug>`                 | Update frontmatter  |
+| POST   | `/p/<project>/issue/<slug>/delete`          | Delete issue        |
+| POST   | `/p/<project>/issues/create`                | Create issue        |
+| GET    | `/p/<project>/issue/<slug>/comments`        | List comments       |
+| POST   | `/p/<project>/issue/<slug>/comments`        | Add comment         |
 | POST   | `/p/<project>/issue/<slug>/comments/toggle` | Toggle comment done |
 | POST   | `/p/<project>/issue/<slug>/comments/delete` | Delete comment      |
+
+## Testing
+
+```bash
+go test ./...
+```

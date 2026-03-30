@@ -13,6 +13,7 @@ type Project struct {
 	IssueDir     string `yaml:"issues"`
 	DocsDir      string `yaml:"docs"`
 	WorkflowFile string `yaml:"workflow"`
+	Version      string `yaml:"version"`
 }
 
 // LoadWorkflow loads the project's workflow config.

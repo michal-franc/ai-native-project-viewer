@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/michal-franc/issue-viewer/internal/tracker"
+	"gopkg.in/yaml.v3"
 )
 
 var jsonOutput bool
@@ -67,19 +68,22 @@ func main() {
 				design = true
 			}
 		}
-		version := flagValue(cmdArgs, "--version")
-		if version == "" && !design {
-			fatal("--version is required\n\nExample:\n  issue-cli next --version 0.1\n  issue-cli next --design --version 0.1")
-		}
 		proj := loadProject(configPath, projectSlug)
+		version := flagValue(cmdArgs, "--version")
+		if version == "" {
+			version = proj.Version
+		}
+		if version == "" && !design {
+			fatal("--version is required (or set version in project.yaml)\n\nExample:\n  issue-cli next --version 0.1\n  issue-cli next --design --version 0.1")
+		}
 		runNext(proj, design, version)
 	case "start":
 		requireArg(cmdArgs, "start", "<slug>")
 		proj := loadProject(configPath, projectSlug)
 		assignee := flagValue(cmdArgs[1:], "--assignee")
 		runStart(proj, cmdArgs[0], assignee)
-	case "context":
-		requireArg(cmdArgs, "context", "<slug>")
+	case "context", "show":
+		requireArg(cmdArgs, cmd, "<slug>")
 		proj := loadProject(configPath, projectSlug)
 		runContext(proj, cmdArgs[0])
 	case "create":
@@ -97,7 +101,7 @@ func main() {
 		requireArg(cmdArgs, "claim", "<slug>")
 		assignee := flagValue(cmdArgs[1:], "--assignee")
 		if assignee == "" {
-			fatal("--assignee is required\n\nExample:\n  issue-cli claim %s --assignee \"my-bot\"", cmdArgs[0])
+			assignee = agentNameForSlug(cmdArgs[0])
 		}
 		proj := loadProject(configPath, projectSlug)
 		runClaim(proj, cmdArgs[0], assignee)
@@ -113,6 +117,9 @@ func main() {
 		requireArg(cmdArgs, "comment", "<slug>")
 		text := flagValue(cmdArgs[1:], "--text")
 		if text == "" {
+			text = flagValue(cmdArgs[1:], "--body")
+		}
+		if text == "" {
 			fatal("--text is required\n\nExample:\n  issue-cli comment %s --text \"your comment here\"", cmdArgs[0])
 		}
 		proj := loadProject(configPath, projectSlug)
@@ -121,8 +128,21 @@ func main() {
 		requireArg(cmdArgs, "checklist", "<slug>")
 		proj := loadProject(configPath, projectSlug)
 		runChecklist(proj, cmdArgs[0])
+	case "check":
+		requireArg(cmdArgs, "check", "<slug>")
+		if len(cmdArgs) < 2 {
+			fatal("check requires a query\n\nExample:\n  issue-cli check <slug> \"Code changes complete\"")
+		}
+		proj := loadProject(configPath, projectSlug)
+		query := strings.Join(cmdArgs[1:], " ")
+		runCheck(proj, cmdArgs[0], query)
 	case "list":
 		proj := loadProject(configPath, projectSlug)
+		// Inject project version as default if --version not provided
+		version := flagValue(cmdArgs, "--version")
+		if version == "" && proj.Version != "" {
+			cmdArgs = append(cmdArgs, "--version", proj.Version)
+		}
 		runList(proj, cmdArgs)
 	case "search":
 		requireArg(cmdArgs, "search", "<query>")
@@ -149,12 +169,49 @@ func loadProject(configPath, projectSlug string) *tracker.Project {
 		// Derive project name from current directory
 		cwd, _ := os.Getwd()
 		name := filepath.Base(cwd)
-		return &tracker.Project{
+		proj := &tracker.Project{
 			Name:     name,
 			Slug:     tracker.Slugify(name),
 			IssueDir: "./issues",
 			DocsDir:  docsDir,
 		}
+		// Load overrides from project.yaml or projects.yaml if present
+		for _, f := range []string{"project.yaml", configPath} {
+			data, err := os.ReadFile(f)
+			if err != nil {
+				continue
+			}
+			// Try single project format first (project.yaml)
+			var local tracker.Project
+			if yaml.Unmarshal(data, &local) == nil {
+				if local.Version != "" {
+					proj.Version = local.Version
+				}
+				if local.WorkflowFile != "" {
+					proj.WorkflowFile = local.WorkflowFile
+				}
+				if proj.Version != "" {
+					break
+				}
+			}
+			// Try multi-project format (projects.yaml)
+			var cfg tracker.ProjectsConfig
+			if yaml.Unmarshal(data, &cfg) == nil {
+				for _, p := range cfg.Projects {
+					if p.Version != "" {
+						proj.Version = p.Version
+						break
+					}
+					if p.WorkflowFile != "" {
+						proj.WorkflowFile = p.WorkflowFile
+					}
+				}
+			}
+			if proj.Version != "" {
+				break
+			}
+		}
+		return proj
 	}
 
 	// Fall back to config file
@@ -196,6 +253,14 @@ func findIssue(proj *tracker.Project, slug string) (*tracker.Issue, []*tracker.I
 	return nil, nil
 }
 
+func agentNameForSlug(slug string) string {
+	if name := os.Getenv("AGENT_NAME"); name != "" {
+		return name
+	}
+	base := filepath.Base(slug)
+	return "agent-" + base
+}
+
 func flagValue(args []string, flag string) string {
 	for i, a := range args {
 		if a == flag && i+1 < len(args) {
@@ -229,19 +294,20 @@ func printHelp() {
 
 Commands:
   process              Learn how this project works (run this first)
-  start <slug>         Claim an issue and get step-by-step instructions
-  next --version <v>   Find work for a version (backlog + in-progress + testing)
+  start <slug>         *** USE THIS TO BEGIN WORK *** Claims, transitions to in-progress, shows next steps
+  next --version <v>   Find work for a version (default: from project.yaml)
   next --design        Find ideas and in-design issues needing design
-  context <slug>       Full context dump for an issue
+  context <slug>       Full context dump for an issue (alias: show)
   create               Create a new issue
   transition <slug>    Move issue to next status (strict ordering)
-  claim <slug>         Set assignee on an issue
+  claim <slug>         Only set assignee (does NOT start work — use 'start' instead)
   unclaim <slug>       Remove assignee from an issue
   done <slug>          Mark issue as done (validates and auto-unclaims)
   comment <slug>       Add a comment to an issue
+  check <slug> <text>  Check off a checkbox item by text match
   checklist <slug>     Show checkbox status for an issue
-  list                 List issues with filters
-  search <query>       Search across issue titles and bodies
+  list                 List issues with filters (--status open|closed|<name>)
+  search <query>       Search across issue titles, bodies, and statuses
   stats                Project health overview
 
 Global flags:
@@ -278,14 +344,15 @@ Every issue follows this lifecycle:
   done           Shipped, tested, documented
 
 == Rules ==
-  - Always claim before starting work
+  - Always use 'start' to begin work (it claims AND transitions to in-progress)
+  - Do NOT use 'claim' to begin work — it only sets assignee without starting
   - Never skip statuses — follow the order strictly
   - Always update docs before marking done
   - Reference other issues with #<slug> in the body
   - Use checkboxes [x] to track subtasks and acceptance criteria
 
 == When you pick up an issue ==
-  1. issue-cli start <slug>          — claims it, shows next steps
+  1. issue-cli start <slug>          — claims it, moves to in-progress, shows next steps
   2. Do the work, check off items
   3. Add ## Test Plan section with ### Automated and ### Manual
   4. issue-cli transition <slug> --to "testing"
@@ -296,7 +363,7 @@ Every issue follows this lifecycle:
 
 == Quick start ==
   issue-cli next --version 0.1    — find work for version 0.1
-  issue-cli start <slug>          — claim it and get instructions
+  issue-cli start <slug>          — begin work (claims + starts in-progress)
   issue-cli done <slug>           — finish when complete
 
 Run 'issue-cli process <topic>' for details:
@@ -327,7 +394,7 @@ Run 'issue-cli process <topic>' for details:
   → idea                 Title only
   idea → in design       Body must have content
   in design → backlog    At least one [ ] checkbox (acceptance criteria)
-  backlog → in progress  Must have an assignee (use: issue-cli claim)
+  backlog → in progress  Must have an assignee (use: issue-cli start — it claims and transitions)
   in progress → testing  All [x] checkboxes must be checked
   testing → documentation Must have ## Test Plan with ### Automated and ### Manual
                           Must have a test results comment
@@ -548,7 +615,7 @@ func runStart(proj *tracker.Project, slug, assignee string) {
 	wf := proj.LoadWorkflow()
 
 	if assignee == "" {
-		assignee = "agent"
+		assignee = agentNameForSlug(slug)
 	}
 
 	fmt.Printf("== Starting work on: %s ==\n", issue.Title)
@@ -603,12 +670,15 @@ func printWorkflowNextSteps(wf *tracker.WorkflowConfig, issue *tracker.Issue) {
 		fmt.Println()
 	}
 
-	// Show the template for current status (what to work on)
+	// Show the template for current status only if not already in the body
 	tmpl := wf.TemplateForStatus(issue.Status)
 	if tmpl != "" {
-		fmt.Println("== Current status template ==")
-		fmt.Println(tmpl)
-		fmt.Println()
+		firstLine := strings.SplitN(tmpl, "\n", 2)[0]
+		if !strings.Contains(issue.BodyRaw, firstLine) {
+			fmt.Println("== Current status template ==")
+			fmt.Println(tmpl)
+			fmt.Println()
+		}
 	}
 
 	// Show next transition
@@ -632,8 +702,9 @@ func runContext(proj *tracker.Project, slug string) {
 	}
 
 	fmt.Printf("== %s ==\n", issue.Title)
-	fmt.Printf("Status: %s | System: %s | Priority: %s | Assignee: %s\n\n",
+	fmt.Printf("Status: %s | System: %s | Priority: %s | Assignee: %s\n",
 		issue.Status, issue.System, issue.Priority, issue.Assignee)
+	fmt.Printf("File: %s\n\n", issue.FilePath)
 
 	fmt.Println("== Body ==")
 	fmt.Println(issue.BodyRaw)
@@ -680,11 +751,38 @@ func runCreate(proj *tracker.Project, args []string) {
 	if title == "" {
 		fatal("--title is required\n\nExample:\n  issue-cli create --title \"Fix heat overflow\" --system Combat --status idea")
 	}
+	wf := proj.LoadWorkflow()
+	statusOrder := wf.GetStatusOrder()
+
 	if status == "" {
+		// Default to first non-"none" status
 		status = "idea"
+		for _, s := range statusOrder {
+			if s != "none" {
+				status = s
+				break
+			}
+		}
 	}
 
-	wf := proj.LoadWorkflow()
+	// Only allow creating issues in early statuses (before backlog)
+	idx := wf.GetStatusIndex(status)
+	backlogIdx := wf.GetStatusIndex("backlog")
+	if backlogIdx == -1 {
+		backlogIdx = 3
+	}
+	if idx == -1 || idx >= backlogIdx {
+		var allowed []string
+		for _, s := range statusOrder {
+			if s == "none" {
+				continue
+			}
+			if wf.GetStatusIndex(s) < backlogIdx {
+				allowed = append(allowed, "\""+s+"\"")
+			}
+		}
+		fatal("Cannot create issue with status \"%s\" — allowed: %s", status, strings.Join(allowed, ", "))
+	}
 
 	// Determine directory
 	dir := proj.IssueDir
@@ -826,6 +924,12 @@ func runDone(proj *tracker.Project, slug string) {
 		fatal("No \"done\" status defined in workflow")
 	}
 
+	if currentIdx < doneIdx-1 {
+		expected := statusOrder[doneIdx-1]
+		fatal("Cannot mark as done from \"%s\" — issue must be in \"%s\" first.\n\n  issue-cli transition %s --to \"%s\"",
+			issue.Status, expected, slug, wf.NextStatus(issue.Status))
+	}
+
 	// Check all validations from current+1 through done
 	for i := currentIdx + 1; i <= doneIdx; i++ {
 		st := statusOrder[i]
@@ -891,6 +995,27 @@ func runChecklist(proj *tracker.Project, slug string) {
 	printCheckboxes(issue.BodyRaw)
 }
 
+func runCheck(proj *tracker.Project, slug, query string) {
+	issue, _ := findIssue(proj, slug)
+
+	newBody, found := tracker.CheckCheckbox(issue.BodyRaw, query)
+	if !found {
+		fmt.Printf("No unchecked item matching \"%s\"\n\n", query)
+		fmt.Println("Unchecked items:")
+		printCheckboxes(issue.BodyRaw)
+		os.Exit(1)
+	}
+
+	err := tracker.UpdateIssueFrontmatter(issue.FilePath, tracker.IssueUpdate{Body: &newBody})
+	if err != nil {
+		fatal("Failed to update: %v", err)
+	}
+
+	total, checked := tracker.CountCheckboxes(newBody)
+	fmt.Printf("✓ Checked: \"%s\"\n", query)
+	fmt.Printf("  Progress: %d/%d\n", checked, total)
+}
+
 func runList(proj *tracker.Project, args []string) {
 	issues, err := tracker.LoadIssues(proj.IssueDir)
 	if err != nil {
@@ -899,11 +1024,31 @@ func runList(proj *tracker.Project, args []string) {
 
 	status := flagValue(args, "--status")
 	system := flagValue(args, "--system")
+	if system == "" {
+		system = flagValue(args, "--category")
+	}
 	assignee := flagValue(args, "--assignee")
+	version := flagValue(args, "--version")
 
 	var filtered []*tracker.Issue
 	for _, issue := range issues {
-		if status != "" && issue.Status != status {
+		if status != "" {
+			switch strings.ToLower(status) {
+			case "open":
+				if issue.Status == "done" {
+					continue
+				}
+			case "closed":
+				if issue.Status != "done" {
+					continue
+				}
+			default:
+				if !strings.EqualFold(issue.Status, status) {
+					continue
+				}
+			}
+		}
+		if version != "" && issue.Version != version {
 			continue
 		}
 		if system != "" && !strings.EqualFold(issue.System, system) {
@@ -923,7 +1068,7 @@ func runList(proj *tracker.Project, args []string) {
 	for _, issue := range filtered {
 		a := ""
 		if issue.Assignee != "" {
-			a = " @" + issue.Assignee
+			a = " claimed by " + issue.Assignee
 		}
 		fmt.Printf("  [%-13s] %-45s %-10s%s\n", issue.Status, issue.Slug, issue.System, a)
 	}
@@ -940,7 +1085,8 @@ func runSearch(proj *tracker.Project, query string) {
 	var matches []*tracker.Issue
 	for _, issue := range issues {
 		if strings.Contains(strings.ToLower(issue.Title), q) ||
-			strings.Contains(strings.ToLower(issue.BodyRaw), q) {
+			strings.Contains(strings.ToLower(issue.BodyRaw), q) ||
+			strings.Contains(strings.ToLower(issue.Status), q) {
 			matches = append(matches, issue)
 		}
 	}

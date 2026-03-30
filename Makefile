@@ -6,9 +6,9 @@ build:
 build-cli:
 	go build -o issue-cli ./cmd/issue-cli/
 
-install: build-cli
-	cp issue-cli $(HOME)/.local/bin/issue-cli
-	@echo "Installed issue-cli to $(HOME)/.local/bin/issue-cli"
+install:
+	go install ./cmd/issue-cli/
+	@echo "Installed issue-cli via go install"
 
 demo: build
 	./issue-viewer -config demo/projects.yaml -port 8080

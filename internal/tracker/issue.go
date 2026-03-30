@@ -216,6 +216,55 @@ func UpdateIssueFrontmatter(filePath string, update IssueUpdate) error {
 	return os.WriteFile(filePath, []byte(out.String()), 0644)
 }
 
+// DeleteIssue removes the issue markdown file and its comment sidecar if present.
+func DeleteIssue(filePath string) error {
+	if err := os.Remove(filePath); err != nil {
+		return fmt.Errorf("deleting %s: %w", filePath, err)
+	}
+	// Also remove comment sidecar if it exists
+	commentFile := strings.TrimSuffix(filePath, ".md") + ".comments.yaml"
+	os.Remove(commentFile) // ignore error — may not exist
+	return nil
+}
+
+// CreateIssueFile creates a new issue markdown file and returns the file path and slug.
+func CreateIssueFile(issueDir, title, status, system string) (filePath, slug string, err error) {
+	if title == "" {
+		return "", "", fmt.Errorf("title is required")
+	}
+	if status == "" {
+		status = "idea"
+	}
+
+	dir := issueDir
+	if system != "" {
+		dir = filepath.Join(dir, system)
+		os.MkdirAll(dir, 0755)
+	}
+
+	slug = Slugify(title)
+	filename := filepath.Join(dir, slug+".md")
+
+	var content strings.Builder
+	content.WriteString("---\n")
+	content.WriteString(fmt.Sprintf("title: \"%s\"\n", strings.ReplaceAll(title, "\"", "\\\"")))
+	content.WriteString(fmt.Sprintf("status: \"%s\"\n", status))
+	if system != "" {
+		content.WriteString(fmt.Sprintf("system: \"%s\"\n", system))
+	}
+	content.WriteString("---\n\n")
+
+	if err := os.WriteFile(filename, []byte(content.String()), 0644); err != nil {
+		return "", "", fmt.Errorf("creating issue: %w", err)
+	}
+
+	if system != "" {
+		slug = strings.ToLower(system) + "/" + slug
+	}
+
+	return filename, slug, nil
+}
+
 func CollectFilterValues(issues []*Issue) (statuses, systems, priorities, labels, assignees []string) {
 	statusSet := map[string]bool{}
 	systemSet := map[string]bool{}
@@ -298,6 +347,24 @@ func CountCheckboxes(body string) (total, checked int) {
 		}
 	}
 	return
+}
+
+// CheckCheckbox finds an unchecked checkbox whose text contains the query and checks it off.
+// Returns the updated body and whether a match was found.
+func CheckCheckbox(body, query string) (string, bool) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- [ ]") {
+			text := strings.ToLower(strings.TrimSpace(trimmed[5:]))
+			if strings.Contains(text, query) {
+				lines[i] = strings.Replace(line, "- [ ]", "- [x]", 1)
+				return strings.Join(lines, "\n"), true
+			}
+		}
+	}
+	return body, false
 }
 
 // HasTestPlan checks if the body has ## Test Plan with ### Automated and ### Manual.
