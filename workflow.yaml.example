@@ -1,0 +1,82 @@
+# Workflow template — defines statuses, validation rules, and per-status templates.
+# Each status can have:
+#   - name: status identifier (used in issue frontmatter)
+#   - description: shown in board column headers
+#   - template: markdown appended to issue body on transition INTO this status
+#   - validation: list of checks run BEFORE transition is allowed
+#
+# Available validation rules:
+#   - body_not_empty          — issue body must not be empty
+#   - has_checkboxes          — body must contain at least one checkbox
+#   - has_assignee            — issue must have an assignee
+#   - all_checkboxes_checked  — all checkboxes must be checked
+#   - has_test_plan           — body must have ## Test Plan with ### Automated and ### Manual
+#   - has_comment_prefix: X   — a comment must start with prefix X
+#
+# Reference this file from projects.yaml:
+#   projects:
+#     - name: "My Project"
+#       issues: "./issues"
+#       workflow: "./workflow.yaml"
+
+statuses:
+  - name: "none"
+
+  - name: "idea"
+    description: "Raw idea, needs exploration"
+    template: |
+      ## Idea
+      - [ ] Description written with enough context for someone unfamiliar
+      - [ ] Edge cases and constraints identified
+      - [ ] Scope is clear (what is NOT included)
+
+  - name: "in design"
+    description: "Being designed and specced out"
+    template: |
+      ## Design
+      - [ ] Acceptance criteria defined as checkboxes
+      - [ ] Dependencies identified
+      - [ ] Approach documented
+    validation:
+      - body_not_empty
+
+  - name: "backlog"
+    description: "Ready to work on"
+    validation:
+      - has_checkboxes
+
+  - name: "in progress"
+    description: "Actively being implemented"
+    template: |
+      ## Implementation
+      - [ ] Code changes complete
+      - [ ] Unit tests written
+      - [ ] Integration tests written (if applicable)
+      - [ ] Test plan section added (## Test Plan with ### Automated and ### Manual)
+    validation:
+      - has_assignee
+
+  - name: "testing"
+    description: "Under verification"
+    template: |
+      ## Testing
+      - [ ] All tests passing
+      - [ ] Test results logged as comment (issue-cli comment <slug> --text "tests: ...")
+    validation:
+      - all_checkboxes_checked
+
+  - name: "documentation"
+    description: "Being documented"
+    template: |
+      ## Documentation
+      - [ ] User-facing docs updated
+      - [ ] Docs logged as comment (issue-cli comment <slug> --text "docs: ...")
+    validation:
+      - has_test_plan
+      - "has_comment_prefix: tests:"
+
+  - name: "done"
+    description: "Completed"
+    validation:
+      - all_checkboxes_checked
+      - "has_comment_prefix: docs:"

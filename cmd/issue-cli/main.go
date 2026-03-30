@@ -303,9 +303,13 @@ Run 'issue-cli process <topic>' for details:
   workflow, format, transitions, testing, docs, systems, references
 `)
 	case "workflow":
+		proj := loadProject(configPath, projectSlug)
+		wf := proj.LoadWorkflow()
+		statusOrder := wf.GetStatusOrder()
+		statusDescs := wf.GetStatusDescriptions()
 		fmt.Println("== Status Lifecycle ==")
-		for i, s := range tracker.StatusOrder {
-			desc := tracker.StatusDescriptions[s]
+		for i, s := range statusOrder {
+			desc := statusDescs[s]
 			if i > 0 {
 				fmt.Print("  → ")
 			} else {
@@ -541,6 +545,7 @@ func runNext(proj *tracker.Project, design bool, version string) {
 
 func runStart(proj *tracker.Project, slug, assignee string) {
 	issue, _ := findIssue(proj, slug)
+	wf := proj.LoadWorkflow()
 
 	if assignee == "" {
 		assignee = "agent"
@@ -556,6 +561,7 @@ func runStart(proj *tracker.Project, slug, assignee string) {
 		if err != nil {
 			fatal("Failed to claim: %v", err)
 		}
+		issue.Assignee = assignee
 		fmt.Printf("✓ Claimed (assignee: %s)\n", assignee)
 	} else {
 		fmt.Printf("Already claimed by: %s\n", issue.Assignee)
@@ -564,66 +570,52 @@ func runStart(proj *tracker.Project, slug, assignee string) {
 	// Auto-transition to in progress if in backlog
 	if issue.Status == "backlog" {
 		s := "in progress"
-		err := tracker.UpdateIssueFrontmatter(issue.FilePath, tracker.IssueUpdate{Status: &s})
+		update := tracker.IssueUpdate{Status: &s}
+
+		// Append template for "in progress"
+		newBody, appended := wf.AppendTemplate(issue.BodyRaw, "in progress")
+		if appended {
+			update.Body = &newBody
+			issue.BodyRaw = newBody
+		}
+
+		err := tracker.UpdateIssueFrontmatter(issue.FilePath, update)
 		if err != nil {
 			fatal("Failed to transition: %v", err)
 		}
 		fmt.Println("✓ Status → in progress")
+		if appended {
+			fmt.Println("✓ Template checkboxes appended to issue body")
+		}
 		issue.Status = "in progress"
 	}
 
 	fmt.Println()
 
-	// Show state-aware guidance
-	switch issue.Status {
-	case "idea":
-		fmt.Printf(`== Next steps ==
-1. Flesh out the description — add requirements, edge cases
-2. When ready: issue-cli transition %s --to "in design"
-`, issue.Slug)
-	case "in design":
-		fmt.Printf(`== Next steps ==
-1. Add acceptance criteria as checkboxes [ ] in the body
-2. When ready: issue-cli transition %s --to "backlog"
-`, issue.Slug)
-	case "in progress":
-		total, checked := tracker.CountCheckboxes(issue.BodyRaw)
-		if total > 0 {
-			fmt.Printf("== Checklist (%d/%d) ==\n", checked, total)
-			printCheckboxes(issue.BodyRaw)
-			fmt.Println()
-		}
-		fmt.Printf(`== Next steps ==
-1. Implement the fix
-2. Check off items as you complete them
-3. Add a ## Test Plan section with:
-   ### Automated — tests you wrote (with file paths)
-   ### Manual — steps for a human to verify
-4. When all checkboxes done:
-   issue-cli transition %s --to "testing"
-5. Log test results:
-   issue-cli comment %s --text "tests: describe results"
-6. issue-cli transition %s --to "documentation"
-7. Update docs and log:
-   issue-cli comment %s --text "docs: updated relevant-doc.md"
-8. Finish:
-   issue-cli done %s
-`, issue.Slug, issue.Slug, issue.Slug, issue.Slug, issue.Slug)
-	case "testing":
-		fmt.Printf(`== Next steps ==
-1. Verify tests pass, log results:
-   issue-cli comment %s --text "tests: all passing"
-2. Move to documentation:
-   issue-cli transition %s --to "documentation"
-`, issue.Slug, issue.Slug)
-	case "documentation":
-		fmt.Printf(`== Next steps ==
-1. Update relevant docs
-2. Log what was updated:
-   issue-cli comment %s --text "docs: updated relevant-doc.md"
-3. Finish:
-   issue-cli done %s
-`, issue.Slug, issue.Slug)
+	printWorkflowNextSteps(wf, issue)
+}
+
+func printWorkflowNextSteps(wf *tracker.WorkflowConfig, issue *tracker.Issue) {
+	total, checked := tracker.CountCheckboxes(issue.BodyRaw)
+	if total > 0 {
+		fmt.Printf("== Checklist (%d/%d) ==\n", checked, total)
+		printCheckboxes(issue.BodyRaw)
+		fmt.Println()
+	}
+
+	// Show the template for current status (what to work on)
+	tmpl := wf.TemplateForStatus(issue.Status)
+	if tmpl != "" {
+		fmt.Println("== Current status template ==")
+		fmt.Println(tmpl)
+		fmt.Println()
+	}
+
+	// Show next transition
+	next := wf.NextStatus(issue.Status)
+	if next != "" {
+		fmt.Println("== Next ==")
+		fmt.Printf("  issue-cli transition %s --to \"%s\"\n", issue.Slug, next)
 	}
 }
 
@@ -692,6 +684,8 @@ func runCreate(proj *tracker.Project, args []string) {
 		status = "idea"
 	}
 
+	wf := proj.LoadWorkflow()
+
 	// Determine directory
 	dir := proj.IssueDir
 	if system != "" {
@@ -712,7 +706,17 @@ func runCreate(proj *tracker.Project, args []string) {
 	if priority != "" {
 		content.WriteString(fmt.Sprintf("priority: \"%s\"\n", priority))
 	}
-	content.WriteString("---\n\n")
+	content.WriteString("---\n")
+
+	// Append template for the initial status
+	tmpl := wf.TemplateForStatus(status)
+	if tmpl != "" {
+		content.WriteString("\n")
+		content.WriteString(tmpl)
+		content.WriteString("\n")
+	} else {
+		content.WriteString("\n")
+	}
 
 	if err := os.WriteFile(filename, []byte(content.String()), 0644); err != nil {
 		fatal("Failed to create issue: %v", err)
@@ -724,18 +728,20 @@ func runCreate(proj *tracker.Project, args []string) {
 
 	fmt.Printf("✓ Created: %s\n", filename)
 	fmt.Printf("  Slug: %s\n", slug)
+	if tmpl != "" {
+		fmt.Println("✓ Template checkboxes added to issue body")
+	}
 	fmt.Printf("\nNext: issue-cli start %s\n", slug)
 }
 
 func runTransition(proj *tracker.Project, slug, to string) {
 	issue, _ := findIssue(proj, slug)
+	wf := proj.LoadWorkflow()
 	to = strings.ToLower(to)
 
-	if !tracker.ValidTransition(issue.Status, to) {
-		// Show what the next valid status is
-		idx := tracker.StatusIndex(issue.Status)
-		if idx >= 0 && idx+1 < len(tracker.StatusOrder) {
-			next := tracker.StatusOrder[idx+1]
+	if !wf.IsValidTransition(issue.Status, to) {
+		next := wf.NextStatus(issue.Status)
+		if next != "" {
 			fatal("Cannot transition from \"%s\" to \"%s\" — must go to \"%s\" next.\n\n  issue-cli transition %s --to \"%s\"",
 				issue.Status, to, next, slug, next)
 		}
@@ -744,64 +750,33 @@ func runTransition(proj *tracker.Project, slug, to string) {
 
 	// Validate requirements for this transition
 	comments, _ := tracker.LoadComments(issue.FilePath)
-	validateTransition(issue, to, comments)
+	if err := wf.Validate(issue, to, comments); err != nil {
+		fatal("Cannot transition to \"%s\" — %s", to, err)
+	}
 
-	// Do the transition
+	// Build update: status + template append
 	s := to
-	if err := tracker.UpdateIssueFrontmatter(issue.FilePath, tracker.IssueUpdate{Status: &s}); err != nil {
+	update := tracker.IssueUpdate{Status: &s}
+
+	newBody, appended := wf.AppendTemplate(issue.BodyRaw, to)
+	if appended {
+		update.Body = &newBody
+		issue.BodyRaw = newBody
+	}
+
+	if err := tracker.UpdateIssueFrontmatter(issue.FilePath, update); err != nil {
 		fatal("Failed to transition: %v", err)
 	}
 
 	fmt.Printf("✓ %s → %s\n", issue.Status, to)
-}
-
-func validateTransition(issue *tracker.Issue, to string, comments []tracker.Comment) {
-	switch to {
-	case "in design":
-		if strings.TrimSpace(issue.BodyRaw) == "" {
-			fatal("Cannot transition to \"in design\" — issue body is empty.\n\nAdd a description to the issue body first.")
-		}
-	case "backlog":
-		total, _ := tracker.CountCheckboxes(issue.BodyRaw)
-		if total == 0 {
-			fatal("Cannot transition to \"backlog\" — no acceptance criteria.\n\nAdd checkboxes [ ] to the issue body defining what done looks like:\n\n  - [ ] First requirement\n  - [ ] Second requirement")
-		}
-	case "in progress":
-		if issue.Assignee == "" {
-			fatal("Cannot transition to \"in progress\" — no assignee.\n\n  issue-cli claim %s --assignee \"your-name\"", issue.Slug)
-		}
-	case "testing":
-		total, checked := tracker.CountCheckboxes(issue.BodyRaw)
-		if total > 0 && checked < total {
-			fatal("Cannot transition to \"testing\" — %d/%d checkboxes incomplete.\n\n  issue-cli checklist %s", checked, total, issue.Slug)
-		}
-	case "documentation":
-		hasAuto, hasManual := tracker.HasTestPlan(issue.BodyRaw)
-		if !hasAuto || !hasManual {
-			fatal(`Cannot transition to "documentation" — missing test plan.
-
-Add a ## Test Plan section to the issue body:
-
-  ## Test Plan
-
-  ### Automated
-  - [x] Unit: path/to/test.cs — what it tests
-  - [x] Integration: path/to/test.go — what it tests
-
-  ### Manual
-  - [ ] Step for a human to verify
-
-Then log results:
-  issue-cli comment %s --text "tests: 3 unit tests, all passing"`, issue.Slug)
-		}
-		if !tracker.HasCommentWithPrefix(comments, "tests:") {
-			fatal("Cannot transition to \"documentation\" — no test results comment.\n\n  issue-cli comment %s --text \"tests: describe your test results\"", issue.Slug)
-		}
-	case "done":
-		if !tracker.HasCommentWithPrefix(comments, "docs:") {
-			fatal("Cannot transition to \"done\" — no docs comment.\n\n  issue-cli comment %s --text \"docs: updated relevant-doc.md\"\n  issue-cli comment %s --text \"docs: not needed, internal refactor\"", issue.Slug, issue.Slug)
-		}
+	if appended {
+		fmt.Println("✓ Template checkboxes appended to issue body")
 	}
+	fmt.Println()
+
+	// Show next steps for the new status
+	issue.Status = to
+	printWorkflowNextSteps(wf, issue)
 }
 
 func runClaim(proj *tracker.Project, slug, assignee string) {
@@ -836,78 +811,59 @@ func runUnclaim(proj *tracker.Project, slug string) {
 
 func runDone(proj *tracker.Project, slug string) {
 	issue, _ := findIssue(proj, slug)
+	wf := proj.LoadWorkflow()
 	comments, _ := tracker.LoadComments(issue.FilePath)
 
 	fmt.Println("== Validation ==")
 
+	// Validate all remaining statuses up to "done"
 	ok := true
+	statusOrder := wf.GetStatusOrder()
+	currentIdx := wf.GetStatusIndex(issue.Status)
+	doneIdx := wf.GetStatusIndex("done")
 
-	// Check checkboxes
-	total, checked := tracker.CountCheckboxes(issue.BodyRaw)
-	if total > 0 && checked == total {
-		fmt.Printf("✓ All checkboxes checked (%d/%d)\n", checked, total)
-	} else if total > 0 {
-		fmt.Printf("✗ Checkboxes incomplete (%d/%d)\n", checked, total)
-		ok = false
+	if doneIdx == -1 {
+		fatal("No \"done\" status defined in workflow")
 	}
 
-	// Check test plan
-	hasAuto, hasManual := tracker.HasTestPlan(issue.BodyRaw)
-	if hasAuto && hasManual {
-		fmt.Println("✓ Test plan present")
-	} else {
-		fmt.Println("✗ Missing test plan (need ### Automated and ### Manual)")
-		ok = false
-	}
-
-	// Check test results comment
-	if tracker.HasCommentWithPrefix(comments, "tests:") {
-		fmt.Println("✓ Test results comment found")
-	} else {
-		fmt.Println("✗ No test results comment")
-		ok = false
-	}
-
-	// Check docs comment
-	if tracker.HasCommentWithPrefix(comments, "docs:") {
-		fmt.Println("✓ Docs comment found")
-	} else {
-		fmt.Println("✗ No docs comment")
-		ok = false
+	// Check all validations from current+1 through done
+	for i := currentIdx + 1; i <= doneIdx; i++ {
+		st := statusOrder[i]
+		if err := wf.Validate(issue, st, comments); err != nil {
+			fmt.Printf("✗ %s: %s\n", st, err)
+			ok = false
+		} else {
+			fmt.Printf("✓ %s: all checks passed\n", st)
+		}
 	}
 
 	if !ok {
-		fmt.Printf("\nCannot mark as done. Fix these first:\n")
-		if total > 0 && checked < total {
-			fmt.Printf("  issue-cli checklist %s\n", slug)
-		}
-		if !hasAuto || !hasManual {
-			fmt.Println("  Add ## Test Plan with ### Automated and ### Manual to the body")
-		}
-		if !tracker.HasCommentWithPrefix(comments, "tests:") {
-			fmt.Printf("  issue-cli comment %s --text \"tests: describe your test results\"\n", slug)
-		}
-		if !tracker.HasCommentWithPrefix(comments, "docs:") {
-			fmt.Printf("  issue-cli comment %s --text \"docs: updated relevant-doc.md\"\n", slug)
-		}
+		fmt.Println("\nCannot mark as done. Fix the issues above first.")
 		os.Exit(1)
 	}
 
-	// Transition through remaining statuses
+	// Transition through remaining statuses, appending templates along the way
 	status := issue.Status
-	for _, next := range []string{"testing", "documentation", "done"} {
-		if tracker.StatusIndex(next) > tracker.StatusIndex(status) {
-			s := next
-			tracker.UpdateIssueFrontmatter(issue.FilePath, tracker.IssueUpdate{Status: &s})
-			status = next
+	for i := currentIdx + 1; i <= doneIdx; i++ {
+		next := statusOrder[i]
+		s := next
+		update := tracker.IssueUpdate{Status: &s}
+
+		newBody, appended := wf.AppendTemplate(issue.BodyRaw, next)
+		if appended {
+			update.Body = &newBody
+			issue.BodyRaw = newBody
 		}
+
+		tracker.UpdateIssueFrontmatter(issue.FilePath, update)
+		status = next
 	}
 
 	// Auto-unclaim
 	empty := ""
 	tracker.UpdateIssueFrontmatter(issue.FilePath, tracker.IssueUpdate{Assignee: &empty})
 
-	fmt.Println("\n✓ Status → done")
+	fmt.Printf("\n✓ Status → %s\n", status)
 	fmt.Println("✓ Assignee cleared")
 }
 
@@ -1036,8 +992,9 @@ func runStats(proj *tracker.Project) {
 
 	fmt.Printf("== Project Stats (%d issues) ==\n\n", len(issues))
 
+	wf := proj.LoadWorkflow()
 	fmt.Println("By status:")
-	for _, s := range tracker.StatusOrder {
+	for _, s := range wf.GetStatusOrder() {
 		if n, ok := byStatus[s]; ok {
 			fmt.Printf("  %-15s %d\n", s, n)
 		}

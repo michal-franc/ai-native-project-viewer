@@ -202,7 +202,9 @@ func UpdateIssueFrontmatter(filePath string, update IssueUpdate) error {
 
 	body := parts[1]
 	if update.Body != nil {
-		body = "\n" + *update.Body + "\n"
+		// Preserve existing comments when updating body
+		_, existingComments := ParseComments(body)
+		body = "\n" + *update.Body + "\n" + SerializeComments(existingComments)
 	}
 
 	var out strings.Builder

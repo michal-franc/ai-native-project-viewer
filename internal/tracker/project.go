@@ -8,10 +8,27 @@ import (
 )
 
 type Project struct {
-	Name     string `yaml:"name"`
-	Slug     string `yaml:"slug"`
-	IssueDir string `yaml:"issues"`
-	DocsDir  string `yaml:"docs"`
+	Name         string `yaml:"name"`
+	Slug         string `yaml:"slug"`
+	IssueDir     string `yaml:"issues"`
+	DocsDir      string `yaml:"docs"`
+	WorkflowFile string `yaml:"workflow"`
+}
+
+// LoadWorkflow loads the project's workflow config.
+// Tries: explicit WorkflowFile path → workflow.yaml in cwd → DefaultWorkflow.
+func (p *Project) LoadWorkflow() *WorkflowConfig {
+	if p.WorkflowFile != "" {
+		wf, err := LoadWorkflow(p.WorkflowFile)
+		if err == nil {
+			return wf
+		}
+	}
+	wf, err := LoadWorkflow("workflow.yaml")
+	if err == nil {
+		return wf
+	}
+	return DefaultWorkflow()
 }
 
 type ProjectsConfig struct {
