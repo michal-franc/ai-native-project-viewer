@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/michal-franc/issue-viewer/internal/tracker"
 )
 
 //go:embed templates/*.html
@@ -101,11 +103,11 @@ var funcMap = template.FuncMap{
 }
 
 type Server struct {
-	projects []Project
+	projects []tracker.Project
 	tmpl     *template.Template
 }
 
-func NewServer(projects []Project) (*Server, error) {
+func NewServer(projects []tracker.Project) (*Server, error) {
 	tmpl, err := template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
 		return nil, err
@@ -117,7 +119,7 @@ func NewServer(projects []Project) (*Server, error) {
 	}, nil
 }
 
-func (s *Server) findProject(slug string) *Project {
+func (s *Server) findProject(slug string) *tracker.Project {
 	for i := range s.projects {
 		if s.projects[i].Slug == slug {
 			return &s.projects[i]
@@ -206,8 +208,8 @@ func (s *Server) handleProjectList(w http.ResponseWriter, r *http.Request) {
 
 	var summaries []ProjectSummary
 	for _, p := range s.projects {
-		issues, _ := LoadIssues(p.IssueDir)
-		docs, _ := LoadDocs(p.DocsDir)
+		issues, _ := tracker.LoadIssues(p.IssueDir)
+		docs, _ := tracker.LoadDocs(p.DocsDir)
 		summaries = append(summaries, ProjectSummary{
 			Name:       p.Name,
 			Slug:       p.Slug,
@@ -225,7 +227,7 @@ func (s *Server) handleProjectList(w http.ResponseWriter, r *http.Request) {
 // --- Issue List ---
 
 type ListData struct {
-	Issues      []*Issue
+	Issues      []*tracker.Issue
 	Statuses    []string
 	Systems     []string
 	Priorities  []string
@@ -247,15 +249,15 @@ type FilterParams struct {
 	Search   string
 }
 
-func (s *Server) handleList(w http.ResponseWriter, r *http.Request, proj *Project, prefix string) {
-	issues, err := LoadIssues(proj.IssueDir)
+func (s *Server) handleList(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	issues, err := tracker.LoadIssues(proj.IssueDir)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	total := len(issues)
-	statuses, systems, priorities, labels, assignees := CollectFilterValues(issues)
+	statuses, systems, priorities, labels, assignees := tracker.CollectFilterValues(issues)
 
 	filter := FilterParams{
 		Status:   r.URL.Query().Get("status"),
@@ -291,7 +293,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request, proj *Projec
 // --- Issue Detail ---
 
 type DetailData struct {
-	Issue       *Issue
+	Issue       *tracker.Issue
 	BackURL     string
 	Prefix      string
 	ProjectName string
@@ -299,7 +301,7 @@ type DetailData struct {
 	SlugMap     map[string]string
 }
 
-func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *Project, prefix string) {
+func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
 	path := strings.TrimPrefix(r.URL.Path, prefix+"/issue/")
 	slug := path
 	if slug == "" {
@@ -307,13 +309,13 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *Proj
 		return
 	}
 
-	issues, err := LoadIssues(proj.IssueDir)
+	issues, err := tracker.LoadIssues(proj.IssueDir)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	var found *Issue
+	var found *tracker.Issue
 	for _, issue := range issues {
 		if issue.Slug == slug {
 			found = issue
@@ -347,7 +349,7 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *Proj
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tmpl.ExecuteTemplate(w, "detail.html", DetailData{Issue: found, BackURL: backURL, Prefix: prefix, ProjectName: proj.Name, Statuses: statusOrder, SlugMap: slugMap}); err != nil {
+	if err := s.tmpl.ExecuteTemplate(w, "detail.html", DetailData{Issue: found, BackURL: backURL, Prefix: prefix, ProjectName: proj.Name, Statuses: tracker.StatusOrder, SlugMap: slugMap}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -357,7 +359,7 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *Proj
 type BoardColumn struct {
 	Status      string
 	Description string
-	Issues      []*Issue
+	Issues      []*tracker.Issue
 }
 
 type BoardData struct {
@@ -373,23 +375,9 @@ type BoardData struct {
 	ProjectName string
 }
 
-var statusOrder = []string{
-	"none", "idea", "in design", "backlog", "in progress", "testing", "documentation", "done",
-}
 
-var statusDescriptions = map[string]string{
-	"none":          "",
-	"idea":          "Raw idea, needs exploration",
-	"in design":     "Being designed and specced out",
-	"backlog":       "Ready to work on",
-	"in progress":   "Actively being implemented",
-	"testing":       "Under verification",
-	"documentation": "Being documented",
-	"done":          "Completed",
-}
-
-func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *Project, prefix string) {
-	issues, err := LoadIssues(proj.IssueDir)
+func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	issues, err := tracker.LoadIssues(proj.IssueDir)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -429,7 +417,7 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *Proje
 	systemFilter := r.URL.Query().Get("system")
 	assigneeFilter := r.URL.Query().Get("assignee")
 
-	var filtered []*Issue
+	var filtered []*tracker.Issue
 	for _, issue := range issues {
 		if versionFilter != "" && issue.Version != versionFilter {
 			continue
@@ -450,7 +438,7 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *Proje
 	}
 	issues = filtered
 
-	byStatus := map[string][]*Issue{}
+	byStatus := map[string][]*tracker.Issue{}
 	seen := map[string]bool{}
 	for _, issue := range issues {
 		st := issue.Status
@@ -463,8 +451,8 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *Proje
 
 	var columns []*BoardColumn
 	added := map[string]bool{}
-	for _, st := range statusOrder {
-		desc := statusDescriptions[st]
+	for _, st := range tracker.StatusOrder {
+		desc := tracker.StatusDescriptions[st]
 		columns = append(columns, &BoardColumn{Status: st, Description: desc, Issues: byStatus[st]})
 		added[st] = true
 	}
@@ -496,15 +484,15 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *Proje
 // --- Docs ---
 
 type DocsData struct {
-	Page        *DocPage
-	Pages       []*DocPage
-	Sections    []DocSection
+	Page        *tracker.DocPage
+	Pages       []*tracker.DocPage
+	Sections    []tracker.DocSection
 	Prefix      string
 	ProjectName string
 }
 
-func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request, proj *Project, prefix string) {
-	pages, err := LoadDocs(proj.DocsDir)
+func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	pages, err := tracker.LoadDocs(proj.DocsDir)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -515,27 +503,27 @@ func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request, proj *Projec
 		return
 	}
 
-	sections := GroupDocSections(pages)
+	sections := tracker.GroupDocSections(pages)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "docs.html", DocsData{Pages: pages, Sections: sections, Prefix: prefix, ProjectName: proj.Name}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
 
-func (s *Server) handleDocPage(w http.ResponseWriter, r *http.Request, proj *Project, prefix string) {
+func (s *Server) handleDocPage(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
 	slug := strings.TrimPrefix(r.URL.Path, prefix+"/docs/")
 	if slug == "" {
 		s.handleDocs(w, r, proj, prefix)
 		return
 	}
 
-	pages, err := LoadDocs(proj.DocsDir)
+	pages, err := tracker.LoadDocs(proj.DocsDir)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	var found *DocPage
+	var found *tracker.DocPage
 	for _, p := range pages {
 		if p.Slug == slug {
 			found = p
@@ -548,7 +536,7 @@ func (s *Server) handleDocPage(w http.ResponseWriter, r *http.Request, proj *Pro
 		return
 	}
 
-	sections := GroupDocSections(pages)
+	sections := tracker.GroupDocSections(pages)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "docs.html", DocsData{Page: found, Pages: pages, Sections: sections, Prefix: prefix, ProjectName: proj.Name}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -557,20 +545,20 @@ func (s *Server) handleDocPage(w http.ResponseWriter, r *http.Request, proj *Pro
 
 // --- Update Issue ---
 
-func (s *Server) handleUpdateIssue(w http.ResponseWriter, r *http.Request, proj *Project, prefix string) {
+func (s *Server) handleUpdateIssue(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
 	slug := strings.TrimPrefix(r.URL.Path, prefix+"/issue/")
 	if slug == "" {
 		http.NotFound(w, r)
 		return
 	}
 
-	issues, err := LoadIssues(proj.IssueDir)
+	issues, err := tracker.LoadIssues(proj.IssueDir)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	var found *Issue
+	var found *tracker.Issue
 	for _, issue := range issues {
 		if issue.Slug == slug {
 			found = issue
@@ -583,13 +571,13 @@ func (s *Server) handleUpdateIssue(w http.ResponseWriter, r *http.Request, proj 
 		return
 	}
 
-	var update IssueUpdate
+	var update tracker.IssueUpdate
 	if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
 		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	if err := UpdateIssueFrontmatter(found.FilePath, update); err != nil {
+	if err := tracker.UpdateIssueFrontmatter(found.FilePath, update); err != nil {
 		http.Error(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -601,8 +589,8 @@ func (s *Server) handleUpdateIssue(w http.ResponseWriter, r *http.Request, proj 
 
 // --- Comments ---
 
-func (s *Server) findIssueBySlug(proj *Project, slug string) *Issue {
-	issues, err := LoadIssues(proj.IssueDir)
+func (s *Server) findIssueBySlug(proj *tracker.Project, slug string) *tracker.Issue {
+	issues, err := tracker.LoadIssues(proj.IssueDir)
 	if err != nil {
 		return nil
 	}
@@ -614,7 +602,7 @@ func (s *Server) findIssueBySlug(proj *Project, slug string) *Issue {
 	return nil
 }
 
-func (s *Server) handleGetComments(w http.ResponseWriter, r *http.Request, proj *Project, prefix string) {
+func (s *Server) handleGetComments(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
 	slug := s.extractCommentSlug(r.URL.Path, prefix, "/comments")
 
 	issue := s.findIssueBySlug(proj, slug)
@@ -623,13 +611,13 @@ func (s *Server) handleGetComments(w http.ResponseWriter, r *http.Request, proj 
 		return
 	}
 
-	comments, err := LoadComments(issue.FilePath)
+	comments, err := tracker.LoadComments(issue.FilePath)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if comments == nil {
-		comments = []Comment{}
+		comments = []tracker.Comment{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -641,7 +629,7 @@ type AddCommentRequest struct {
 	Text  string `json:"text"`
 }
 
-func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request, proj *Project, prefix string) {
+func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
 	slug := s.extractCommentSlug(r.URL.Path, prefix, "/comments")
 
 	issue := s.findIssueBySlug(proj, slug)
@@ -661,7 +649,7 @@ func (s *Server) handleAddComment(w http.ResponseWriter, r *http.Request, proj *
 		return
 	}
 
-	if err := AddComment(issue.FilePath, req.Block, req.Text, "app"); err != nil {
+	if err := tracker.AddComment(issue.FilePath, req.Block, req.Text, "app"); err != nil {
 		http.Error(w, "failed to save: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -681,7 +669,7 @@ func (s *Server) extractCommentSlug(path, prefix, suffix string) string {
 	return slug
 }
 
-func (s *Server) handleToggleComment(w http.ResponseWriter, r *http.Request, proj *Project, prefix string) {
+func (s *Server) handleToggleComment(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
 	slug := s.extractCommentSlug(r.URL.Path, prefix, "/comments/toggle")
 
 	issue := s.findIssueBySlug(proj, slug)
@@ -696,7 +684,7 @@ func (s *Server) handleToggleComment(w http.ResponseWriter, r *http.Request, pro
 		return
 	}
 
-	if err := ToggleComment(issue.FilePath, req.ID); err != nil {
+	if err := tracker.ToggleComment(issue.FilePath, req.ID); err != nil {
 		http.Error(w, "failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -705,7 +693,7 @@ func (s *Server) handleToggleComment(w http.ResponseWriter, r *http.Request, pro
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request, proj *Project, prefix string) {
+func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
 	slug := s.extractCommentSlug(r.URL.Path, prefix, "/comments/delete")
 
 	issue := s.findIssueBySlug(proj, slug)
@@ -720,7 +708,7 @@ func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request, pro
 		return
 	}
 
-	if err := DeleteComment(issue.FilePath, req.ID); err != nil {
+	if err := tracker.DeleteComment(issue.FilePath, req.ID); err != nil {
 		http.Error(w, "failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -731,8 +719,8 @@ func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request, pro
 
 // --- Filters ---
 
-func filterIssues(issues []*Issue, f FilterParams) []*Issue {
-	var result []*Issue
+func filterIssues(issues []*tracker.Issue, f FilterParams) []*tracker.Issue {
+	var result []*tracker.Issue
 	for _, issue := range issues {
 		if f.Status != "" && issue.Status != f.Status {
 			continue

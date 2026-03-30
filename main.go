@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+
+	"github.com/michal-franc/issue-viewer/internal/tracker"
 )
 
 func main() {
@@ -15,11 +17,11 @@ func main() {
 	port := flag.Int("port", 8080, "Port to listen on")
 	flag.Parse()
 
-	var projects []Project
+	var projects []tracker.Project
 
 	if *configFile != "" {
 		var err error
-		projects, err = LoadProjects(*configFile)
+		projects, err = tracker.LoadProjects(*configFile)
 		if err != nil {
 			log.Fatalf("Failed to load config: %v", err)
 		}
@@ -30,7 +32,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %s is not a valid directory\n", *dir)
 			os.Exit(1)
 		}
-		projects = []Project{{
+		projects = []tracker.Project{{
 			Name:     "Issues",
 			Slug:     "default",
 			IssueDir: *dir,
