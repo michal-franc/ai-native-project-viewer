@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -20,6 +21,26 @@ var templateFS embed.FS
 //go:embed static/*
 var staticFS embed.FS
 
+func canonicalStatusKey(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.ReplaceAll(s, " ", "-")
+	return s
+}
+
+func orderedStatusesForIssue(wf *tracker.WorkflowConfig, current string) []string {
+	statuses := append([]string{}, wf.GetStatusOrder()...)
+	current = strings.TrimSpace(current)
+	if current == "" {
+		return statuses
+	}
+	for _, status := range statuses {
+		if status == current {
+			return statuses
+		}
+	}
+	return append([]string{current}, statuses...)
+}
+
 var funcMap = template.FuncMap{
 	"statusColor": func(s string) string {
 		colors := map[string]string{
@@ -32,14 +53,14 @@ var funcMap = template.FuncMap{
 			"documentation": "#14b8a6",
 			"done":          "#22c55e",
 		}
-		if c, ok := colors[s]; ok {
+		if c, ok := colors[canonicalStatusKey(s)]; ok {
 			return c
 		}
 		return "#6b7280"
 	},
 	"statusTextColor": func(s string) string {
 		dark := map[string]bool{"in progress": true, "testing": true, "human-testing": true}
-		if dark[s] {
+		if dark[canonicalStatusKey(s)] {
 			return "#000000"
 		}
 		return "#ffffff"
@@ -160,6 +181,8 @@ func (s *Server) handleProjectRoutes(w http.ResponseWriter, r *http.Request) {
 		s.handleList(w, r, proj, prefix)
 	case rest == "board":
 		s.handleBoard(w, r, proj, prefix)
+	case rest == "hash":
+		s.handleHash(w, r, proj)
 	case rest == "docs":
 		s.handleDocs(w, r, proj, prefix)
 	case strings.HasPrefix(rest, "docs/"):
@@ -353,7 +376,9 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *trac
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tmpl.ExecuteTemplate(w, "detail.html", DetailData{Issue: found, BackURL: backURL, Prefix: prefix, ProjectName: proj.Name, Statuses: tracker.StatusOrder, SlugMap: slugMap}); err != nil {
+	wf := proj.LoadWorkflow()
+	statuses := orderedStatusesForIssue(wf, found.Status)
+	if err := s.tmpl.ExecuteTemplate(w, "detail.html", DetailData{Issue: found, BackURL: backURL, Prefix: prefix, ProjectName: proj.Name, Statuses: statuses, SlugMap: slugMap}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -442,6 +467,10 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *track
 	}
 	issues = filtered
 
+	wf := proj.LoadWorkflow()
+	statusOrder := wf.GetStatusOrder()
+	statusDescs := wf.GetStatusDescriptions()
+
 	byStatus := map[string][]*tracker.Issue{}
 	seen := map[string]bool{}
 	for _, issue := range issues {
@@ -455,8 +484,8 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *track
 
 	var columns []*BoardColumn
 	added := map[string]bool{}
-	for _, st := range tracker.StatusOrder {
-		desc := tracker.StatusDescriptions[st]
+	for _, st := range statusOrder {
+		desc := statusDescs[st]
 		columns = append(columns, &BoardColumn{Status: st, Description: desc, Issues: byStatus[st]})
 		added[st] = true
 	}
@@ -719,6 +748,18 @@ func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request, pro
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// --- Content Hash (for auto-refresh) ---
+
+func (s *Server) handleHash(w http.ResponseWriter, r *http.Request, proj *tracker.Project) {
+	issues, _ := tracker.LoadIssues(proj.IssueDir)
+	h := sha256.New()
+	for _, issue := range issues {
+		fmt.Fprintf(h, "%s:%s:%s:%d\n", issue.Slug, issue.Status, issue.Assignee, issue.ModTime.UnixNano())
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"hash": fmt.Sprintf("%x", h.Sum(nil))})
 }
 
 // --- Delete Issue ---

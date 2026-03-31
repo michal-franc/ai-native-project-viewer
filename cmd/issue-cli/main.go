@@ -49,12 +49,8 @@ func main() {
 	cmdArgs := filtered[1:]
 
 	switch cmd {
-	case "help":
-		if len(cmdArgs) > 0 && cmdArgs[0] == "commands" {
-			printHelp()
-		} else {
-			printHelp()
-		}
+	case "help", "--help", "-h":
+		printHelp()
 	case "process":
 		topic := ""
 		if len(cmdArgs) > 0 {
@@ -120,7 +116,17 @@ func main() {
 			text = flagValue(cmdArgs[1:], "--body")
 		}
 		if text == "" {
-			fatal("--text is required\n\nExample:\n  issue-cli comment %s --text \"your comment here\"", cmdArgs[0])
+			// Treat all remaining args after slug as the comment text
+			var parts []string
+			for _, a := range cmdArgs[1:] {
+				if !strings.HasPrefix(a, "--") {
+					parts = append(parts, a)
+				}
+			}
+			text = strings.Join(parts, " ")
+		}
+		if text == "" {
+			fatal("Text is required\n\nExample:\n  issue-cli comment %s \"your comment here\"\n  issue-cli comment %s --text \"your comment here\"", cmdArgs[0], cmdArgs[0])
 		}
 		proj := loadProject(configPath, projectSlug)
 		runComment(proj, cmdArgs[0], text)
@@ -148,6 +154,10 @@ func main() {
 		requireArg(cmdArgs, "search", "<query>")
 		proj := loadProject(configPath, projectSlug)
 		runSearch(proj, strings.Join(cmdArgs, " "))
+	case "update":
+		requireArg(cmdArgs, "update", "<slug>")
+		proj := loadProject(configPath, projectSlug)
+		runUpdate(proj, cmdArgs[0], cmdArgs[1:])
 	case "stats":
 		proj := loadProject(configPath, projectSlug)
 		runStats(proj)
@@ -307,7 +317,7 @@ Commands:
   check <slug> <text>  Check off a checkbox item by text match
   checklist <slug>     Show checkbox status for an issue
   list                 List issues with filters (--status open|closed|<name>)
-  search <query>       Search across issue titles, bodies, and statuses
+  search <query>       Search issues (supports regex, e.g. "foo|bar")
   stats                Project health overview
 
 Global flags:
@@ -632,6 +642,7 @@ func runStart(proj *tracker.Project, slug, assignee string) {
 		}
 		issue.Assignee = assignee
 		fmt.Printf("✓ Claimed (assignee: %s)\n", assignee)
+		fmt.Printf("file: %s\n", issue.FilePath)
 	} else {
 		fmt.Printf("Already claimed by: %s\n", issue.Assignee)
 	}
@@ -659,6 +670,7 @@ func runStart(proj *tracker.Project, slug, assignee string) {
 		issue.Status = "in progress"
 	}
 
+	fmt.Printf("file: %s\n", issue.FilePath)
 	fmt.Println()
 
 	printWorkflowNextSteps(wf, issue)
@@ -796,6 +808,10 @@ func runCreate(proj *tracker.Project, args []string) {
 	slug := tracker.Slugify(title)
 	filename := filepath.Join(dir, slug+".md")
 
+	if _, err := os.Stat(filename); err == nil {
+		fatal("Issue already exists: %s\nUse 'update' to modify existing issues.", filename)
+	}
+
 	var content strings.Builder
 	content.WriteString("---\n")
 	content.WriteString(fmt.Sprintf("title: \"%s\"\n", strings.ReplaceAll(title, "\"", "\\\"")))
@@ -827,6 +843,7 @@ func runCreate(proj *tracker.Project, args []string) {
 	}
 
 	fmt.Printf("✓ Created: %s\n", filename)
+	fmt.Printf("file: %s\n", filename)
 	fmt.Printf("  Slug: %s\n", slug)
 	if tmpl != "" {
 		fmt.Println("✓ Template checkboxes added to issue body")
@@ -869,6 +886,7 @@ func runTransition(proj *tracker.Project, slug, to string) {
 	}
 
 	fmt.Printf("✓ %s → %s\n", issue.Status, to)
+	fmt.Printf("file: %s\n", issue.FilePath)
 	if appended {
 		fmt.Println("✓ Template checkboxes appended to issue body")
 	}
@@ -898,6 +916,7 @@ doClaim:
 		fatal("Failed to claim: %v", err)
 	}
 	fmt.Printf("✓ Claimed: %s (assignee: %s)\n", issue.Slug, assignee)
+	fmt.Printf("file: %s\n", issue.FilePath)
 }
 
 func runUnclaim(proj *tracker.Project, slug string) {
@@ -907,6 +926,54 @@ func runUnclaim(proj *tracker.Project, slug string) {
 		fatal("Failed to unclaim: %v", err)
 	}
 	fmt.Printf("✓ Unclaimed: %s\n", issue.Slug)
+	fmt.Printf("file: %s\n", issue.FilePath)
+}
+
+func runUpdate(proj *tracker.Project, slug string, args []string) {
+	issue, _ := findIssue(proj, slug)
+	update := tracker.IssueUpdate{}
+	changed := false
+
+	if s := flagValue(args, "--status"); s != "" {
+		update.Status = &s
+		changed = true
+	}
+	if p := flagValue(args, "--priority"); p != "" {
+		update.Priority = &p
+		changed = true
+	}
+	if a := flagValue(args, "--assignee"); a != "" {
+		update.Assignee = &a
+		changed = true
+	}
+	if l := flagValue(args, "--labels"); l != "" {
+		update.Labels = strings.Split(l, ",")
+		changed = true
+	}
+
+	if !changed {
+		fatal("No fields to update. Use --status, --priority, --assignee, or --labels\n\nExample:\n  issue-cli update %s --status \"in progress\" --priority high", slug)
+	}
+
+	if err := tracker.UpdateIssueFrontmatter(issue.FilePath, update); err != nil {
+		fatal("Failed to update: %v", err)
+	}
+
+	fmt.Printf("✓ Updated: %s\n", issue.Slug)
+	if update.Status != nil {
+		fmt.Printf("  status → %s\n", *update.Status)
+	}
+	if update.Priority != nil {
+		fmt.Printf("  priority → %s\n", *update.Priority)
+	}
+	if update.Assignee != nil {
+		fmt.Printf("  assignee → %s\n", *update.Assignee)
+	}
+	if update.Labels != nil {
+		fmt.Printf("  labels → %s\n", strings.Join(update.Labels, ", "))
+	}
+	fmt.Printf("file: %s\n", issue.FilePath)
+	fmt.Printf("\nhint: don't forget to update %s with recent changes, progress notes, or TODOs (use - [ ] checkboxes for TODOs)\n", issue.FilePath)
 }
 
 func runDone(proj *tracker.Project, slug string) {
@@ -971,6 +1038,7 @@ func runDone(proj *tracker.Project, slug string) {
 
 	fmt.Printf("\n✓ Status → %s\n", status)
 	fmt.Println("✓ Assignee cleared")
+	fmt.Printf("file: %s\n", issue.FilePath)
 }
 
 func runComment(proj *tracker.Project, slug, text string) {
@@ -980,6 +1048,7 @@ func runComment(proj *tracker.Project, slug, text string) {
 		fatal("Failed to add comment: %v", err)
 	}
 	fmt.Printf("✓ Comment added to %s\n", issue.Slug)
+	fmt.Printf("file: %s\n", issue.FilePath)
 }
 
 func runChecklist(proj *tracker.Project, slug string) {
@@ -1016,6 +1085,7 @@ func runCheck(proj *tracker.Project, slug, query string) {
 	total, checked := tracker.CountCheckboxes(newBody)
 	fmt.Printf("✓ Checked: \"%s\"\n", query)
 	fmt.Printf("  Progress: %d/%d\n", checked, total)
+	fmt.Printf("file: %s\n", issue.FilePath)
 }
 
 func runList(proj *tracker.Project, args []string) {
@@ -1083,12 +1153,18 @@ func runSearch(proj *tracker.Project, query string) {
 		fatal("Cannot load issues: %v", err)
 	}
 
-	q := strings.ToLower(query)
+	// Normalize shell-escaped regex operators (bots often pass \| instead of |)
+	normalized := strings.ReplaceAll(query, `\|`, "|")
+	re, err := regexp.Compile("(?i)" + normalized)
+	if err != nil {
+		// Fall back to literal case-insensitive search
+		re = regexp.MustCompile("(?i)" + regexp.QuoteMeta(query))
+	}
 	var matches []*tracker.Issue
 	for _, issue := range issues {
-		if strings.Contains(strings.ToLower(issue.Title), q) ||
-			strings.Contains(strings.ToLower(issue.BodyRaw), q) ||
-			strings.Contains(strings.ToLower(issue.Status), q) {
+		if re.MatchString(issue.Title) ||
+			re.MatchString(issue.BodyRaw) ||
+			re.MatchString(issue.Status) {
 			matches = append(matches, issue)
 		}
 	}
