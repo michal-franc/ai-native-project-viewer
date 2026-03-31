@@ -10,6 +10,7 @@
 #   - has_checkboxes          — body must contain at least one checkbox
 #   - has_assignee            — issue must have an assignee
 #   - all_checkboxes_checked  — all checkboxes must be checked
+#   - section_checkboxes_checked: X — all checkboxes under ## X must be checked
 #   - has_test_plan           — body must have ## Test Plan with ### Automated and ### Manual
 #   - has_comment_prefix: X   — a comment must start with prefix X
 #
@@ -63,7 +64,7 @@ statuses:
       - [ ] All tests passing
       - [ ] Test results logged as comment (issue-cli comment <slug> --text "tests: ...")
     validation:
-      - all_checkboxes_checked
+      - "section_checkboxes_checked: Implementation"
 
   - name: "documentation"
     description: "Being documented"
@@ -72,11 +73,12 @@ statuses:
       - [ ] User-facing docs updated
       - [ ] Docs logged as comment (issue-cli comment <slug> --text "docs: ...")
     validation:
+      - "section_checkboxes_checked: Testing"
       - has_test_plan
       - "has_comment_prefix: tests:"
 
   - name: "done"
     description: "Completed"
     validation:
-      - all_checkboxes_checked
+      - "section_checkboxes_checked: Documentation"
       - "has_comment_prefix: docs:"

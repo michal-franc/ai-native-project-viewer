@@ -13,9 +13,19 @@
             if (lastHash === null) {
                 lastHash = data.hash;
             } else if (data.hash !== lastHash) {
+                sessionStorage.setItem('scrollX', window.scrollX);
+                sessionStorage.setItem('scrollY', window.scrollY);
                 location.reload();
             }
         }).catch(function() {});
+    }
+
+    var sx = sessionStorage.getItem('scrollX');
+    var sy = sessionStorage.getItem('scrollY');
+    if (sx !== null && sy !== null) {
+        window.scrollTo(parseInt(sx), parseInt(sy));
+        sessionStorage.removeItem('scrollX');
+        sessionStorage.removeItem('scrollY');
     }
 
     setInterval(poll, interval);

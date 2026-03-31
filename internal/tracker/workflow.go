@@ -192,6 +192,19 @@ func (w *WorkflowConfig) checkRule(rule string, issue *Issue, comments []Comment
 		if total > 0 && checked < total {
 			return fmt.Errorf("%d/%d checkboxes incomplete:\n\n  issue-cli checklist %s", checked, total, issue.Slug)
 		}
+	case "section_checkboxes_checked":
+		if ruleArg == "" {
+			return fmt.Errorf("section_checkboxes_checked rule requires a section name argument")
+		}
+		total, checked := CountCheckboxesInSection(issue.BodyRaw, ruleArg)
+		if total == 0 {
+			// Section missing or has no checkboxes — skip silently.
+			// The section may not exist if the issue was created without that template.
+			return nil
+		}
+		if checked < total {
+			return fmt.Errorf("%d/%d checkboxes incomplete in section %q:\n\n  issue-cli checklist %s", checked, total, ruleArg, issue.Slug)
+		}
 	case "has_test_plan":
 		hasAuto, hasManual := HasTestPlan(issue.BodyRaw)
 		if !hasAuto || !hasManual {

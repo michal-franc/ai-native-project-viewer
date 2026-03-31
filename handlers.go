@@ -400,6 +400,8 @@ type BoardData struct {
 	System      string
 	Assignees   []string
 	Assignee    string
+	Priorities  []string
+	Labels      []string
 	Prefix      string
 	ProjectName string
 }
@@ -415,6 +417,8 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *track
 	versionSet := map[string]bool{}
 	systemSet := map[string]bool{}
 	assigneeSet := map[string]bool{}
+	prioritySet := map[string]bool{}
+	labelSet := map[string]bool{}
 	for _, issue := range issues {
 		if issue.Version != "" {
 			versionSet[issue.Version] = true
@@ -424,6 +428,12 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *track
 		}
 		if issue.Assignee != "" {
 			assigneeSet[issue.Assignee] = true
+		}
+		if issue.Priority != "" {
+			prioritySet[issue.Priority] = true
+		}
+		for _, l := range issue.Labels {
+			labelSet[l] = true
 		}
 	}
 	var versions []string
@@ -441,6 +451,16 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *track
 		assignees = append(assignees, a)
 	}
 	sort.Strings(assignees)
+	var priorities []string
+	for p := range prioritySet {
+		priorities = append(priorities, p)
+	}
+	sort.Strings(priorities)
+	var labels []string
+	for l := range labelSet {
+		labels = append(labels, l)
+	}
+	sort.Strings(labels)
 
 	versionFilter := r.URL.Query().Get("version")
 	systemFilter := r.URL.Query().Get("system")
@@ -504,6 +524,8 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *track
 		System:      systemFilter,
 		Assignees:   assignees,
 		Assignee:    assigneeFilter,
+		Priorities:  priorities,
+		Labels:      labels,
 		Prefix:      prefix,
 		ProjectName: proj.Name,
 	}
@@ -786,9 +808,13 @@ func (s *Server) handleDeleteIssue(w http.ResponseWriter, r *http.Request, proj 
 // --- Create Issue ---
 
 type CreateIssueRequest struct {
-	Title  string `json:"title"`
-	Status string `json:"status"`
-	System string `json:"system"`
+	Title    string   `json:"title"`
+	Status   string   `json:"status"`
+	System   string   `json:"system"`
+	Version  string   `json:"version"`
+	Priority string   `json:"priority"`
+	Labels   []string `json:"labels"`
+	Body     string   `json:"body"`
 }
 
 func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
@@ -803,7 +829,15 @@ func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request, proj 
 		return
 	}
 
-	_, slug, err := tracker.CreateIssueFile(proj.IssueDir, req.Title, req.Status, req.System)
+	_, slug, err := tracker.CreateIssueFileOpts(proj.IssueDir, tracker.CreateIssueOpts{
+		Title:    req.Title,
+		Status:   req.Status,
+		System:   req.System,
+		Version:  req.Version,
+		Priority: req.Priority,
+		Labels:   req.Labels,
+		Body:     req.Body,
+	})
 	if err != nil {
 		http.Error(w, "create failed: "+err.Error(), http.StatusInternalServerError)
 		return

@@ -263,6 +263,54 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
+	t.Run("section_checkboxes_checked passes", func(t *testing.T) {
+		sectionWf := &WorkflowConfig{
+			Statuses: []WorkflowStatus{
+				{Name: "testing", Validation: []string{"section_checkboxes_checked: Implementation"}},
+			},
+		}
+		issue := &Issue{
+			Slug:    "test",
+			BodyRaw: "## Implementation\n- [x] Code done\n- [x] Tests written\n\n## Testing\n- [ ] Not done yet",
+		}
+		err := sectionWf.Validate(issue, "testing", nil)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("section_checkboxes_checked fails with unchecked", func(t *testing.T) {
+		sectionWf := &WorkflowConfig{
+			Statuses: []WorkflowStatus{
+				{Name: "testing", Validation: []string{"section_checkboxes_checked: Implementation"}},
+			},
+		}
+		issue := &Issue{
+			Slug:    "test",
+			BodyRaw: "## Implementation\n- [x] Code done\n- [ ] Tests written\n\n## Testing\n- [ ] Not done yet",
+		}
+		err := sectionWf.Validate(issue, "testing", nil)
+		if err == nil {
+			t.Fatal("expected error for unchecked section checkbox")
+		}
+	})
+
+	t.Run("section_checkboxes_checked skips missing section", func(t *testing.T) {
+		sectionWf := &WorkflowConfig{
+			Statuses: []WorkflowStatus{
+				{Name: "testing", Validation: []string{"section_checkboxes_checked: Implementation"}},
+			},
+		}
+		issue := &Issue{
+			Slug:    "test",
+			BodyRaw: "## Other\n- [x] Done",
+		}
+		err := sectionWf.Validate(issue, "testing", nil)
+		if err != nil {
+			t.Errorf("expected no error for missing section, got: %v", err)
+		}
+	})
+
 	t.Run("has_test_plan passes for human-testing", func(t *testing.T) {
 		issue := &Issue{BodyRaw: "## Test Plan\n### Automated\nTests\n### Manual\nSteps"}
 		comments := []Comment{{Text: "tests: all pass"}}

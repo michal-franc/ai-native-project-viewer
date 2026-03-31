@@ -366,7 +366,7 @@ func TestDeleteIssue_WithCommentSidecar(t *testing.T) {
 func TestCreateIssueFile(t *testing.T) {
 	dir := t.TempDir()
 
-	fp, slug, err := CreateIssueFile(dir, "My New Issue", "backlog", "")
+	fp, slug, err := CreateIssueFile(dir, "My New Issue", "backlog", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestCreateIssueFile(t *testing.T) {
 func TestCreateIssueFile_WithSystem(t *testing.T) {
 	dir := t.TempDir()
 
-	fp, slug, err := CreateIssueFile(dir, "System Issue", "idea", "Combat")
+	fp, slug, err := CreateIssueFile(dir, "System Issue", "idea", "Combat", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestCreateIssueFile_WithSystem(t *testing.T) {
 
 func TestCreateIssueFile_EmptyTitle(t *testing.T) {
 	dir := t.TempDir()
-	_, _, err := CreateIssueFile(dir, "", "idea", "")
+	_, _, err := CreateIssueFile(dir, "", "idea", "", "")
 	if err == nil {
 		t.Fatal("expected error for empty title")
 	}
@@ -419,7 +419,7 @@ func TestCreateIssueFile_EmptyTitle(t *testing.T) {
 
 func TestCreateIssueFile_DefaultStatus(t *testing.T) {
 	dir := t.TempDir()
-	fp, _, err := CreateIssueFile(dir, "Default Status", "", "")
+	fp, _, err := CreateIssueFile(dir, "Default Status", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -522,6 +522,38 @@ func TestCountCheckboxes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCountCheckboxesInSection(t *testing.T) {
+	body := "## Idea\n- [x] described\n- [x] scoped\n\n## Implementation\n- [x] code done\n- [ ] tests written\n\n## Testing\n- [ ] all passing"
+
+	t.Run("counts only in target section", func(t *testing.T) {
+		total, checked := CountCheckboxesInSection(body, "Implementation")
+		if total != 2 || checked != 1 {
+			t.Errorf("got (%d, %d), want (2, 1)", total, checked)
+		}
+	})
+
+	t.Run("fully checked section", func(t *testing.T) {
+		total, checked := CountCheckboxesInSection(body, "Idea")
+		if total != 2 || checked != 2 {
+			t.Errorf("got (%d, %d), want (2, 2)", total, checked)
+		}
+	})
+
+	t.Run("missing section returns zero", func(t *testing.T) {
+		total, checked := CountCheckboxesInSection(body, "Nonexistent")
+		if total != 0 || checked != 0 {
+			t.Errorf("got (%d, %d), want (0, 0)", total, checked)
+		}
+	})
+
+	t.Run("case insensitive heading match", func(t *testing.T) {
+		total, checked := CountCheckboxesInSection(body, "implementation")
+		if total != 2 || checked != 1 {
+			t.Errorf("got (%d, %d), want (2, 1)", total, checked)
+		}
+	})
 }
 
 func TestCheckCheckbox(t *testing.T) {

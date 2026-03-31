@@ -228,38 +228,71 @@ func DeleteIssue(filePath string) error {
 }
 
 // CreateIssueFile creates a new issue markdown file and returns the file path and slug.
-func CreateIssueFile(issueDir, title, status, system string) (filePath, slug string, err error) {
-	if title == "" {
+type CreateIssueOpts struct {
+	Title    string
+	Status   string
+	System   string
+	Version  string
+	Priority string
+	Labels   []string
+	Body     string
+}
+
+func CreateIssueFile(issueDir, title, status, system, version string) (filePath, slug string, err error) {
+	return CreateIssueFileOpts(issueDir, CreateIssueOpts{
+		Title: title, Status: status, System: system, Version: version,
+	})
+}
+
+func CreateIssueFileOpts(issueDir string, opts CreateIssueOpts) (filePath, slug string, err error) {
+	if opts.Title == "" {
 		return "", "", fmt.Errorf("title is required")
 	}
-	if status == "" {
-		status = "idea"
+	if opts.Status == "" {
+		opts.Status = "idea"
 	}
 
 	dir := issueDir
-	if system != "" {
-		dir = filepath.Join(dir, system)
+	if opts.System != "" {
+		dir = filepath.Join(dir, opts.System)
 		os.MkdirAll(dir, 0755)
 	}
 
-	slug = Slugify(title)
+	slug = Slugify(opts.Title)
 	filename := filepath.Join(dir, slug+".md")
 
 	var content strings.Builder
 	content.WriteString("---\n")
-	content.WriteString(fmt.Sprintf("title: \"%s\"\n", strings.ReplaceAll(title, "\"", "\\\"")))
-	content.WriteString(fmt.Sprintf("status: \"%s\"\n", status))
-	if system != "" {
-		content.WriteString(fmt.Sprintf("system: \"%s\"\n", system))
+	content.WriteString(fmt.Sprintf("title: \"%s\"\n", strings.ReplaceAll(opts.Title, "\"", "\\\"")))
+	content.WriteString(fmt.Sprintf("status: \"%s\"\n", opts.Status))
+	if opts.System != "" {
+		content.WriteString(fmt.Sprintf("system: \"%s\"\n", opts.System))
 	}
-	content.WriteString("---\n\n")
+	if opts.Version != "" {
+		content.WriteString(fmt.Sprintf("version: \"%s\"\n", opts.Version))
+	}
+	if opts.Priority != "" {
+		content.WriteString(fmt.Sprintf("priority: \"%s\"\n", opts.Priority))
+	}
+	if len(opts.Labels) > 0 {
+		content.WriteString("labels:\n")
+		for _, l := range opts.Labels {
+			content.WriteString(fmt.Sprintf("  - %s\n", l))
+		}
+	}
+	content.WriteString("---\n")
+	if opts.Body != "" {
+		content.WriteString("\n" + opts.Body + "\n")
+	} else {
+		content.WriteString("\n")
+	}
 
 	if err := os.WriteFile(filename, []byte(content.String()), 0644); err != nil {
 		return "", "", fmt.Errorf("creating issue: %w", err)
 	}
 
-	if system != "" {
-		slug = strings.ToLower(system) + "/" + slug
+	if opts.System != "" {
+		slug = strings.ToLower(opts.System) + "/" + slug
 	}
 
 	return filename, slug, nil
@@ -339,6 +372,30 @@ func ValidTransition(from, to string) bool {
 func CountCheckboxes(body string) (total, checked int) {
 	for _, line := range strings.Split(body, "\n") {
 		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- [x]") || strings.HasPrefix(trimmed, "- [X]") {
+			total++
+			checked++
+		} else if strings.HasPrefix(trimmed, "- [ ]") {
+			total++
+		}
+	}
+	return
+}
+
+// CountCheckboxesInSection counts checkboxes only under a specific ## heading.
+// The section ends at the next ## heading or end of body.
+func CountCheckboxesInSection(body, section string) (total, checked int) {
+	inSection := false
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			heading := strings.TrimSpace(strings.TrimPrefix(trimmed, "##"))
+			inSection = strings.EqualFold(heading, section)
+			continue
+		}
+		if !inSection {
+			continue
+		}
 		if strings.HasPrefix(trimmed, "- [x]") || strings.HasPrefix(trimmed, "- [X]") {
 			total++
 			checked++

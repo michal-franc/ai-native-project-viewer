@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/michal-franc/issue-viewer/internal/tracker"
 	"gopkg.in/yaml.v3"
@@ -14,7 +15,33 @@ import (
 
 var jsonOutput bool
 
+func logAction(args []string) {
+	logDir := filepath.Join(os.TempDir(), "issue-cli-logs")
+	os.MkdirAll(logDir, 0755)
+	logFile := filepath.Join(logDir, "actions.jsonl")
+
+	entry := map[string]interface{}{
+		"ts":   time.Now().UTC().Format(time.RFC3339),
+		"pid":  os.Getpid(),
+		"ppid": os.Getppid(),
+		"args": args,
+	}
+
+	line, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	f.Write(append(line, '\n'))
+}
+
 func main() {
+	logAction(os.Args[1:])
 	args := os.Args[1:]
 
 	// Parse global flags
@@ -50,7 +77,11 @@ func main() {
 
 	switch cmd {
 	case "help", "--help", "-h":
-		printHelp()
+		if len(cmdArgs) > 0 {
+			runProcess(cmdArgs[0], configPath, projectSlug)
+		} else {
+			printHelp()
+		}
 	case "process":
 		topic := ""
 		if len(cmdArgs) > 0 {
@@ -88,6 +119,15 @@ func main() {
 	case "transition":
 		requireArg(cmdArgs, "transition", "<slug>")
 		to := flagValue(cmdArgs[1:], "--to")
+		if to == "" {
+			// Accept positional: transition <slug> <status>
+			for _, a := range cmdArgs[1:] {
+				if !strings.HasPrefix(a, "--") {
+					to = a
+					break
+				}
+			}
+		}
 		if to == "" {
 			fatal("--to is required\n\nExample:\n  issue-cli transition %s --to \"testing\"", cmdArgs[0])
 		}
@@ -248,14 +288,26 @@ func findIssue(proj *tracker.Project, slug string) (*tracker.Issue, []*tracker.I
 	if err != nil {
 		fatal("Cannot load issues: %v", err)
 	}
+
+	// Normalize: strip .md extension, strip leading issue dir path, lowercase
+	normalized := slug
+	normalized = strings.TrimSuffix(normalized, ".md")
+	// Strip leading path to issue dir (e.g. "issues/Combat/foo" → "Combat/foo")
+	if rel, err := filepath.Rel(proj.IssueDir, normalized); err == nil && !strings.HasPrefix(rel, "..") {
+		normalized = rel
+	}
+	normalizedLower := strings.ToLower(normalized)
+
+	// Exact match (case-insensitive)
 	for _, issue := range issues {
-		if issue.Slug == slug {
+		if strings.ToLower(issue.Slug) == normalizedLower {
 			return issue, issues
 		}
 	}
-	// Try partial match
+	// Try partial match (case-insensitive)
 	for _, issue := range issues {
-		if strings.HasSuffix(issue.Slug, "/"+slug) || strings.Contains(issue.Slug, slug) {
+		slugLower := strings.ToLower(issue.Slug)
+		if strings.HasSuffix(slugLower, "/"+normalizedLower) || strings.Contains(slugLower, normalizedLower) {
 			return issue, issues
 		}
 	}
@@ -288,7 +340,64 @@ func requireArg(args []string, cmd, argName string) {
 
 func fatal(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "Error: "+format+"\n", args...)
+	if retries := countRecentRetries(); retries >= 2 {
+		fmt.Fprintf(os.Stderr, "\nhint: this same command has failed %d times in a row from this session.\n", retries+1)
+		fmt.Fprintf(os.Stderr, "hint: try a different approach — run 'issue-cli process' to review the workflow,\n")
+		fmt.Fprintf(os.Stderr, "      or 'issue-cli checklist <slug>' to see what's blocking.\n")
+	}
 	os.Exit(1)
+}
+
+// countRecentRetries checks the action log for consecutive identical commands
+// from the same parent process. Returns how many prior identical entries exist.
+func countRecentRetries() int {
+	logFile := filepath.Join(os.TempDir(), "issue-cli-logs", "actions.jsonl")
+	data, err := os.ReadFile(logFile)
+	if err != nil {
+		return 0
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 2 {
+		return 0
+	}
+
+	// Current entry is the last line
+	type entry struct {
+		Args []string `json:"args"`
+		PPID int      `json:"ppid"`
+	}
+
+	var current entry
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &current); err != nil {
+		return 0
+	}
+
+	count := 0
+	for i := len(lines) - 2; i >= 0; i-- {
+		var prev entry
+		if err := json.Unmarshal([]byte(lines[i]), &prev); err != nil {
+			break
+		}
+		if prev.PPID != current.PPID {
+			break
+		}
+		if len(prev.Args) != len(current.Args) {
+			break
+		}
+		same := true
+		for j := range prev.Args {
+			if prev.Args[j] != current.Args[j] {
+				same = false
+				break
+			}
+		}
+		if !same {
+			break
+		}
+		count++
+	}
+	return count
 }
 
 func outputJSON(v interface{}) {
@@ -362,6 +471,12 @@ Every issue follows this lifecycle:
   - Reference other issues with #<slug> in the body
   - Use checkboxes [x] to track subtasks and acceptance criteria
 
+== IMPORTANT: Command output ==
+  - NEVER suppress stderr (no 2>/dev/null) — errors contain critical workflow guidance
+  - NEVER use || true to ignore failures — non-zero exit codes mean something went wrong
+  - ALWAYS read and act on the full output of every command — it contains next steps
+  - If a command fails, fix the issue it describes, do not retry blindly
+
 == When you pick up an issue ==
   1. issue-cli start <slug>          — claims it, moves to in-progress, shows next steps
   2. Do the work, check off items
@@ -406,7 +521,7 @@ Run 'issue-cli process <topic>' for details:
   idea → in design            Body must have content
   in design → backlog         At least one [ ] checkbox (acceptance criteria)
   backlog → in progress       Must have an assignee (use: issue-cli start)
-  in progress → testing       All [x] checkboxes must be checked
+  in progress → testing       Section checkboxes must be checked (e.g. ## Implementation)
   testing → human-testing     Must have ## Test Plan with ### Automated and ### Manual
                                Must have a test results comment
   human-testing → documentation  Manual verification by humans
