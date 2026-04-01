@@ -117,6 +117,13 @@
                             </div>
                             {{end}}
                         </a>
+                        <div class="board-card-dispatch" onclick="event.stopPropagation(); toggleAgentPicker(this)">
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 1.75a.75.75 0 00-1.19.61v11.28a.75.75 0 001.19.61l9.5-5.64a.75.75 0 000-1.22L1.5 1.75z"/></svg>
+                            <div class="agent-picker" onclick="event.stopPropagation()">
+                                <button class="agent-picker-option" onclick="dispatchToAgent('{{.Slug}}', 'claude'); closeAllPickers()">Claude</button>
+                                <button class="agent-picker-option" onclick="dispatchToAgent('{{.Slug}}', 'codex'); closeAllPickers()">Codex</button>
+                            </div>
+                        </div>
                         <button class="board-card-delete" title="Delete issue" onclick="event.stopPropagation(); confirmDelete('{{.Slug}}', '{{.Title}}')">
                             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11 1.75V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM6.5 1.75v1.25h3V1.75a.25.25 0 00-.25-.25h-2.5a.25.25 0 00-.25.25zM4.997 6.178a.75.75 0 10-1.493.144L4.5 13.25a.25.25 0 00.25.25h6.5a.25.25 0 00.25-.25l.996-6.928a.75.75 0 10-1.493-.144L10.08 12.5H5.92L4.997 6.178z"/></svg>
                         </button>
@@ -177,6 +184,24 @@
             <div class="modal-actions">
                 <button class="modal-btn modal-btn-cancel" onclick="closeCreateModal()">Cancel</button>
                 <button class="modal-btn modal-btn-primary" id="create-confirm-btn" onclick="submitCreate()">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Dispatch agent modal -->
+    <div class="modal-overlay" id="dispatch-modal" style="display:none">
+        <div class="modal" style="max-width:640px">
+            <div class="modal-title">Dispatch to Agent</div>
+            <div class="modal-body">
+                <div id="dispatch-steps" class="dispatch-steps"></div>
+                <div id="dispatch-session" class="dispatch-session"></div>
+                <details class="dispatch-prompt-details">
+                    <summary>Prompt sent</summary>
+                    <pre class="dispatch-prompt-pre" id="dispatch-prompt"></pre>
+                </details>
+            </div>
+            <div class="modal-actions">
+                <button class="modal-btn modal-btn-cancel" onclick="closeDispatchModal()">Close</button>
             </div>
         </div>
     </div>
@@ -465,8 +490,60 @@
         if (e.key === 'Escape') {
             closeDeleteModal();
             closeCreateModal();
+            closeDispatchModal();
         }
     });
+
+    // Agent picker
+    function toggleAgentPicker(el) {
+        var picker = el.querySelector('.agent-picker');
+        var isOpen = picker.classList.contains('open');
+        closeAllPickers();
+        if (!isOpen) picker.classList.add('open');
+    }
+    function closeAllPickers() {
+        document.querySelectorAll('.agent-picker.open').forEach(function(p) { p.classList.remove('open'); });
+    }
+    document.addEventListener('click', closeAllPickers);
+
+    // Dispatch to agent
+    function dispatchToAgent(slug, agent) {
+        var modal = document.getElementById('dispatch-modal');
+        var stepsEl = document.getElementById('dispatch-steps');
+        var promptEl = document.getElementById('dispatch-prompt');
+        var sessionEl = document.getElementById('dispatch-session');
+        modal.style.display = '';
+        stepsEl.innerHTML = '<div class="dispatch-step pending">Dispatching to ' + agent + '...</div>';
+        promptEl.textContent = '';
+        sessionEl.textContent = '';
+
+        fetch(prefix + '/issue/' + slug + '/dispatch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent: agent })
+        }).then(res => res.json()).then(data => {
+            sessionEl.textContent = 'tmux session: ' + data.session;
+            promptEl.textContent = data.prompt;
+
+            var html = '';
+            data.steps.forEach(function(step) {
+                var icon = step.status === 'ok' ? '&#10003;' : '&#10007;';
+                var cls = step.status === 'ok' ? 'ok' : 'error';
+                html += '<div class="dispatch-step ' + cls + '">'
+                    + '<span class="dispatch-step-icon">' + icon + '</span> '
+                    + step.name
+                    + (step.detail ? ' <span class="dispatch-step-detail">(' + step.detail + ')</span>' : '')
+                    + '</div>';
+            });
+            stepsEl.innerHTML = html;
+        }).catch(function(err) {
+            stepsEl.innerHTML = '<div class="dispatch-step error">Failed: ' + err.message + '</div>';
+        });
+    }
+
+    function closeDispatchModal() {
+        document.getElementById('dispatch-modal').style.display = 'none';
+    }
 
     function showToast(msg, isError) {
         const toast = document.getElementById('save-toast');
@@ -474,6 +551,66 @@
         toast.className = 'save-toast ' + (isError ? 'show error' : 'show');
         setTimeout(() => { toast.className = 'save-toast'; }, 1500);
     }
+
+    // Image paste/drop upload for body textarea
+    (function() {
+        const textarea = document.getElementById('create-body');
+        if (!textarea) return;
+
+        async function uploadFile(file) {
+            const fd = new FormData();
+            fd.append('file', file);
+            const res = await fetch(prefix + '/upload', { method: 'POST', body: fd });
+            if (!res.ok) throw new Error('Upload failed');
+            return (await res.json()).url;
+        }
+
+        function insertAtCursor(text) {
+            const s = textarea.selectionStart;
+            textarea.value = textarea.value.substring(0, s) + text + textarea.value.substring(textarea.selectionEnd);
+            textarea.selectionStart = textarea.selectionEnd = s + text.length;
+            textarea.focus();
+        }
+
+        textarea.addEventListener('paste', async function(e) {
+            const items = e.clipboardData && e.clipboardData.items;
+            if (!items) return;
+            for (const item of items) {
+                if (item.type.startsWith('image/')) {
+                    e.preventDefault();
+                    const placeholder = '![Uploading...]()';
+                    insertAtCursor(placeholder);
+                    try {
+                        const url = await uploadFile(item.getAsFile());
+                        textarea.value = textarea.value.replace(placeholder, '![image](' + url + ')');
+                    } catch (err) {
+                        textarea.value = textarea.value.replace(placeholder, '');
+                        showToast('Upload failed', true);
+                    }
+                }
+            }
+        });
+
+        textarea.addEventListener('dragover', function(e) { e.preventDefault(); });
+        textarea.addEventListener('drop', async function(e) {
+            const files = e.dataTransfer && e.dataTransfer.files;
+            if (!files) return;
+            for (const file of files) {
+                if (file.type.startsWith('image/')) {
+                    e.preventDefault();
+                    const placeholder = '![Uploading...]()';
+                    insertAtCursor(placeholder);
+                    try {
+                        const url = await uploadFile(file);
+                        textarea.value = textarea.value.replace(placeholder, '![image](' + url + ')');
+                    } catch (err) {
+                        textarea.value = textarea.value.replace(placeholder, '');
+                        showToast('Upload failed', true);
+                    }
+                }
+            }
+        });
+    })();
     </script>
     <script src="/static/auto-refresh.js"></script>
 </body>

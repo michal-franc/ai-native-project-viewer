@@ -101,6 +101,29 @@ Downloads all items from `github.com/users/michal-franc/projects/4` and writes t
 - `/docs` — documentation pages with sidebar navigation
 - `/issue/<slug>` — issue detail with sidebar metadata
 
+## Agent Dispatch
+
+The board and detail views can dispatch issues to AI agents (Claude or Codex) via tmux sessions:
+
+- **Board view** — hover a card, click the play button, pick Claude or Codex
+- **Detail view** — two buttons in the sidebar (Claude / Codex)
+- **Backend** — `POST /p/<project>/issue/<slug>/dispatch` with `{"agent": "claude"}` or `{"agent": "codex"}`
+- The handler creates a tmux session, opens alacritty, starts the selected agent, and pastes the generated prompt
+
+## Workflow Side-Effects
+
+`WorkflowStatus` supports a `side_effects` field — actions that run automatically after a transition:
+
+- `clear_assignee` — clears the assignee field (used on `backlog` so design agents are unassigned before implementation)
+
+Side-effects are declarative in `workflow.yaml` or the default config:
+
+```yaml
+- name: backlog
+  validation: [has_checkboxes]
+  side_effects: [clear_assignee]
+```
+
 ## Adding New Statuses
 
 Status colors and board column order are defined in `handlers.go`:

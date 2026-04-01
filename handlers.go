@@ -6,7 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
+	"time"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -195,10 +199,17 @@ func (s *Server) handleProjectRoutes(w http.ResponseWriter, r *http.Request) {
 		s.handleToggleComment(w, r, proj, prefix)
 	case strings.HasPrefix(rest, "issue/") && strings.HasSuffix(rest, "/comments/delete") && r.Method == http.MethodPost:
 		s.handleDeleteComment(w, r, proj, prefix)
+	case strings.HasPrefix(rest, "issue/") && strings.HasSuffix(rest, "/dispatch") && r.Method == http.MethodPost:
+		s.handleDispatchAgent(w, r, proj, prefix)
 	case strings.HasPrefix(rest, "issue/") && strings.HasSuffix(rest, "/delete") && r.Method == http.MethodPost:
 		s.handleDeleteIssue(w, r, proj, prefix)
 	case rest == "issues/create" && r.Method == http.MethodPost:
 		s.handleCreateIssue(w, r, proj, prefix)
+	case rest == "upload" && r.Method == http.MethodPost:
+		s.handleUpload(w, r, proj, prefix)
+	case strings.HasPrefix(rest, "attachments/"):
+		attachDir := filepath.Join(proj.IssueDir, "attachments")
+		http.StripPrefix(prefix+"/attachments/", http.FileServer(http.Dir(attachDir))).ServeHTTP(w, r)
 	case strings.HasPrefix(rest, "issue/") && r.Method == http.MethodGet:
 		s.handleDetail(w, r, proj, prefix)
 	case strings.HasPrefix(rest, "issue/") && r.Method == http.MethodPost:
@@ -846,6 +857,295 @@ func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request, proj 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "slug": slug})
+}
+
+func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		http.Error(w, "file too large (max 10MB)", http.StatusBadRequest)
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "missing file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	data, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, "read error", http.StatusInternalServerError)
+		return
+	}
+
+	contentType := http.DetectContentType(data)
+	if !strings.HasPrefix(contentType, "image/") {
+		http.Error(w, "only image files allowed", http.StatusBadRequest)
+		return
+	}
+
+	ext := filepath.Ext(header.Filename)
+	if ext == "" {
+		switch contentType {
+		case "image/png":
+			ext = ".png"
+		case "image/jpeg":
+			ext = ".jpg"
+		case "image/gif":
+			ext = ".gif"
+		case "image/webp":
+			ext = ".webp"
+		default:
+			ext = ".png"
+		}
+	}
+
+	hash := sha256.Sum256(data)
+	filename := fmt.Sprintf("%x%s", hash[:16], ext)
+
+	attachDir := filepath.Join(proj.IssueDir, "attachments")
+	os.MkdirAll(attachDir, 0755)
+
+	dest := filepath.Join(attachDir, filename)
+	if _, err := os.Stat(dest); os.IsNotExist(err) {
+		if err := os.WriteFile(dest, data, 0644); err != nil {
+			http.Error(w, "write error", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	urlPath := prefix + "/attachments/" + filename
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"url": urlPath})
+}
+
+// --- Dispatch to Agent ---
+
+func buildAgentPrompt(issue *tracker.Issue) string {
+	// Determine goal based on current status
+	var goalSection string
+	status := strings.ToLower(strings.TrimSpace(issue.Status))
+	switch {
+	case status == "idea" || status == "in design":
+		goalSection = `## Your goal
+
+This issue starts from "` + issue.Status + `". Your final destination is "backlog".
+Work through the workflow steps until the issue reaches backlog status, then stop.
+  idea -> in design -> backlog`
+	default:
+		goalSection = `## Your goal
+
+This issue starts from "` + issue.Status + `". Your final destination is "human-testing".
+Work through the workflow steps until the issue reaches human-testing, then stop.
+That status requires manual verification by a human.
+  backlog -> in progress -> testing -> human-testing`
+	}
+
+	return fmt.Sprintf(`You have been assigned this issue: %s
+
+## Before you start
+
+Learn the workflow process first:
+  issue-cli process workflow      # understand the status lifecycle
+  issue-cli process transitions   # understand what each transition requires
+
+%s
+
+## How to work on this issue
+
+1. Run: issue-cli start %s
+   This claims the issue and shows your checklist and next steps.
+
+2. Run: issue-cli show %s
+   Read the full context — body, comments, checklist status.
+
+3. Work through each checkbox in the issue one at a time. After completing each one, mark it:
+   issue-cli check %s "<checkbox text>"
+
+4. If you are unsure about something or need clarification, ask the user before proceeding.
+
+5. When the current status checkboxes are done, transition to the next status:
+   issue-cli transition %s --to "<next-status>"
+   The CLI will tell you what the valid next status is and what it requires.
+
+6. Repeat steps 3-5 for each status. Each transition may add new checkboxes — work through them all.
+
+## issue-cli commands you can use freely
+
+These are safe to run without asking the user:
+  issue-cli process workflow          # learn status lifecycle
+  issue-cli process transitions       # learn transition requirements
+  issue-cli show %s                   # full context dump
+  issue-cli checklist %s              # checkbox status
+  issue-cli next                      # see available work
+  issue-cli start %s                  # claim and begin work
+  issue-cli check %s "<text>"         # mark a checkbox done
+  issue-cli transition %s --to "<next-status>"  # move forward
+  issue-cli append %s --body "content"          # append section to issue body
+
+## CRITICAL: NEVER modify issue .md files manually. Always use issue-cli commands.
+
+## If you encounter a bug in issue-cli itself, report it:
+  issue-cli report-bug "description of what went wrong"
+
+## Commands that require user approval — DO NOT run without asking
+
+  issue-cli transition <slug> --to "done"       # only humans close issues
+  Any transition backwards                       # ask first
+  Creating or deleting issues                    # ask first
+
+## Issue metadata
+  Title: %s
+  Status: %s
+  Priority: %s
+
+%s`,
+		issue.Slug,
+		goalSection,
+		issue.Slug,
+		issue.Slug,
+		issue.Slug,
+		issue.Slug,
+		issue.Slug, issue.Slug, issue.Slug, issue.Slug, issue.Slug, issue.Slug,
+		issue.Title, issue.Status, issue.Priority,
+		issue.BodyRaw)
+}
+
+type DispatchStep struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type DispatchResponse struct {
+	Status  string         `json:"status"`
+	Prompt  string         `json:"prompt"`
+	Session string         `json:"session"`
+	LogFile string         `json:"log_file,omitempty"`
+	Steps   []DispatchStep `json:"steps"`
+}
+
+func tmuxSessionName(slug string) string {
+	r := strings.NewReplacer("/", "-", ".", "-", " ", "-")
+	return "agent-" + r.Replace(slug)
+}
+
+func runStep(steps *[]DispatchStep, name string, cmd *exec.Cmd) bool {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		*steps = append(*steps, DispatchStep{Name: name, Status: "error", Detail: strings.TrimSpace(string(out))})
+		return false
+	}
+	*steps = append(*steps, DispatchStep{Name: name, Status: "ok"})
+	return true
+}
+
+func (s *Server) handleDispatchAgent(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	slug := strings.TrimPrefix(r.URL.Path, prefix+"/issue/")
+	slug = strings.TrimSuffix(slug, "/dispatch")
+
+	issue := s.findIssueBySlug(proj, slug)
+	if issue == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Parse agent type from request body (default: claude)
+	agentType := "claude"
+	var body struct {
+		Agent string `json:"agent"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err == nil && body.Agent != "" {
+		agentType = body.Agent
+	}
+
+	prompt := buildAgentPrompt(issue)
+	session := tmuxSessionName(slug)
+
+	workDir := proj.WorkDir
+	if workDir == "" {
+		workDir, _ = os.Getwd()
+	}
+
+	// Write prompt to temp file (needed because tmux send-keys can't handle multi-line reliably)
+	promptFile, err := os.CreateTemp("", "agent-prompt-*.txt")
+	if err != nil {
+		http.Error(w, "failed to create temp file: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	promptFile.WriteString(prompt)
+	promptFile.Close()
+
+	steps := []DispatchStep{}
+	sessionLogDir := filepath.Join(workDir, ".agent-logs", session)
+	rawLog := filepath.Join(sessionLogDir, "rawlog")
+	cliLog := filepath.Join(sessionLogDir, session+".clilog")
+	respond := func(status string) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(DispatchResponse{Status: status, Prompt: prompt, Session: session, LogFile: rawLog, Steps: steps})
+	}
+
+	// Step 1: Create tmux session (detached) in project dir
+	if !runStep(&steps, fmt.Sprintf("Create tmux session in %s", workDir),
+		exec.Command("tmux", "new-session", "-d", "-s", session, "-c", workDir)) {
+		respond("error")
+		return
+	}
+
+	// Step 2: Name the tmux window with the issue slug
+	exec.Command("tmux", "rename-window", "-t", session, slug).Run()
+
+	// Step 3: Create log directory and pipe session output to rawlog
+	os.MkdirAll(sessionLogDir, 0755)
+	runStep(&steps, fmt.Sprintf("Log to %s", rawLog),
+		exec.Command("tmux", "pipe-pane", "-t", session, "-o", fmt.Sprintf("cat >> %s", rawLog)))
+
+	// Step 4: Set ISSUE_CLI_LOG env var so issue-cli writes to clilog
+	runStep(&steps, fmt.Sprintf("CLI log to %s", cliLog),
+		exec.Command("tmux", "send-keys", "-t", session, fmt.Sprintf("export ISSUE_CLI_LOG=%q", cliLog), "Enter"))
+
+	// Step 5: Send explicit cd (belt and suspenders)
+	runStep(&steps, fmt.Sprintf("cd %s", workDir),
+		exec.Command("tmux", "send-keys", "-t", session, fmt.Sprintf("cd %q", workDir), "Enter"))
+
+	// Step 3: Switch i3 workspace
+	if ws := proj.I3Workspace; ws != "" {
+		runStep(&steps, fmt.Sprintf("Switch to workspace %s", ws),
+			exec.Command("i3-msg", "workspace", ws))
+	}
+
+	// Step 4: Open alacritty attached to tmux session
+	if !runStep(&steps, "Open alacritty",
+		exec.Command("i3-msg", "exec", fmt.Sprintf("alacritty -e tmux attach -t %s", session))) {
+		respond("error")
+		return
+	}
+
+	// Step 5: Wait for shell to be ready in tmux
+	time.Sleep(500 * time.Millisecond)
+
+	// Step 6: Start agent in interactive mode
+	runStep(&steps, fmt.Sprintf("Start %s (interactive)", agentType),
+		exec.Command("tmux", "send-keys", "-t", session, agentType, "Enter"))
+
+	// Step 7: Wait for agent to boot
+	time.Sleep(3 * time.Second)
+
+	// Step 8: Load prompt into tmux buffer and paste into agent
+	runStep(&steps, "Load prompt into tmux buffer",
+		exec.Command("tmux", "load-buffer", promptFile.Name()))
+
+	runStep(&steps, fmt.Sprintf("Paste prompt to %s", agentType),
+		exec.Command("tmux", "paste-buffer", "-t", session))
+
+	// Step 9: Submit with Enter
+	time.Sleep(200 * time.Millisecond)
+	runStep(&steps, "Submit prompt",
+		exec.Command("tmux", "send-keys", "-t", session, "Enter"))
+
+	respond("dispatched")
 }
 
 // --- Filters ---

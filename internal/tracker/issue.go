@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
-	"gopkg.in/yaml.v3"
 )
 
 // StatusOrder defines the workflow lifecycle.
@@ -158,58 +158,79 @@ func UpdateIssueFrontmatter(filePath string, update IssueUpdate) error {
 		return fmt.Errorf("invalid frontmatter in %s", filePath)
 	}
 
-	existing := map[string]interface{}{}
-	if err := yaml.Unmarshal([]byte(parts[0]), &existing); err != nil {
-		return fmt.Errorf("parsing frontmatter: %w", err)
+	fmRaw := parts[0]
+	body := parts[1]
+
+	// Line-level frontmatter editing to preserve ordering, types, and unmodified fields
+	setScalar := func(fm, key, value string) string {
+		re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:.*$`)
+		newLine := key + `: "` + value + `"`
+		if re.MatchString(fm) {
+			return re.ReplaceAllString(fm, newLine)
+		}
+		// Append before the end
+		return strings.TrimRight(fm, "\n") + "\n" + newLine + "\n"
+	}
+
+	removeField := func(fm, key string) string {
+		// Remove scalar field
+		re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:.*\n?`)
+		fm = re.ReplaceAllString(fm, "")
+		// Remove list field (key: followed by indented - lines)
+		reList := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:\s*\n([ \t]+-[^\n]*\n?)*`)
+		fm = reList.ReplaceAllString(fm, "")
+		return fm
+	}
+
+	setLabels := func(fm string, labels []string) string {
+		fm = removeField(fm, "labels")
+		if len(labels) == 0 {
+			return fm
+		}
+		var buf strings.Builder
+		buf.WriteString("labels:\n")
+		for _, l := range labels {
+			buf.WriteString("  - " + l + "\n")
+		}
+		return strings.TrimRight(fm, "\n") + "\n" + buf.String()
 	}
 
 	if update.Status != nil {
-		existing["status"] = *update.Status
+		fmRaw = setScalar(fmRaw, "status", *update.Status)
 	}
 	if update.Priority != nil {
 		if *update.Priority == "" {
-			delete(existing, "priority")
+			fmRaw = removeField(fmRaw, "priority")
 		} else {
-			existing["priority"] = *update.Priority
+			fmRaw = setScalar(fmRaw, "priority", *update.Priority)
 		}
 	}
 	if update.Version != nil {
 		if *update.Version == "" {
-			delete(existing, "version")
+			fmRaw = removeField(fmRaw, "version")
 		} else {
-			existing["version"] = *update.Version
+			fmRaw = setScalar(fmRaw, "version", *update.Version)
 		}
 	}
 	if update.Assignee != nil {
 		if *update.Assignee == "" {
-			delete(existing, "assignee")
+			fmRaw = removeField(fmRaw, "assignee")
 		} else {
-			existing["assignee"] = *update.Assignee
+			fmRaw = setScalar(fmRaw, "assignee", *update.Assignee)
 		}
 	}
 	if update.Labels != nil {
-		if len(update.Labels) == 0 {
-			delete(existing, "labels")
-		} else {
-			existing["labels"] = update.Labels
-		}
+		fmRaw = setLabels(fmRaw, update.Labels)
 	}
 
-	newFM, err := yaml.Marshal(existing)
-	if err != nil {
-		return fmt.Errorf("serializing frontmatter: %w", err)
-	}
-
-	body := parts[1]
 	if update.Body != nil {
-		// Preserve existing comments when updating body
 		_, existingComments := ParseComments(body)
 		body = "\n" + *update.Body + "\n" + SerializeComments(existingComments)
 	}
 
 	var out strings.Builder
-	out.WriteString("---\n")
-	out.Write(newFM)
+	out.WriteString("---")
+	out.WriteString(fmRaw)
 	out.WriteString("---")
 	out.WriteString(body)
 

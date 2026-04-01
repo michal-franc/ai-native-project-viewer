@@ -34,6 +34,7 @@ Open `http://localhost:8080` to see a sample project with issues and docs.
 - **Inline comments** on issue body blocks with open/done status
 - **Issue references** — `#123` auto-links to other issues
 - **Theme picker** — dark, dracula, light
+- **Agent dispatch** — send issues to Claude or Codex from the board (hover play button) or detail view
 
 ### CLI (`issue-cli`)
 
@@ -44,7 +45,8 @@ Open `http://localhost:8080` to see a sample project with issues and docs.
 - **Status aliases** — `--status open` (all non-done) and `--status closed` (done only)
 - **Category alias** — `--category` works as alias for `--system`
 - **Checkbox management** — `check` command to tick off checklist items by text match
-- **Configurable workflows** — custom statuses, templates, and validation rules via `workflow.yaml`
+- **Configurable workflows** — custom statuses, templates, validation rules, and side-effects via `workflow.yaml`
+- **Workflow side-effects** — automatic actions on transition (e.g., `clear_assignee` when entering backlog)
 
 ### Syncing
 
@@ -252,6 +254,7 @@ Comments are stored at the bottom of issue files in an HTML comment block (invis
 | POST   | `/p/<project>/issue/<slug>/comments`        | Add comment         |
 | POST   | `/p/<project>/issue/<slug>/comments/toggle` | Toggle comment done |
 | POST   | `/p/<project>/issue/<slug>/comments/delete` | Delete comment      |
+| POST   | `/p/<project>/issue/<slug>/dispatch`        | Dispatch to agent   |
 
 ## Testing
 

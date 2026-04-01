@@ -112,6 +112,35 @@
                     <div class="sidebar-value">{{.Issue.Created}}</div>
                 </div>
                 {{end}}
+
+                <div class="sidebar-section dispatch-btn-group">
+                    <button class="dispatch-btn" onclick="dispatchToAgent('claude')">
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 1.75a.75.75 0 00-1.19.61v11.28a.75.75 0 001.19.61l9.5-5.64a.75.75 0 000-1.22L1.5 1.75z"/></svg>
+                        Claude
+                    </button>
+                    <button class="dispatch-btn dispatch-btn-codex" onclick="dispatchToAgent('codex')">
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 1.75a.75.75 0 00-1.19.61v11.28a.75.75 0 001.19.61l9.5-5.64a.75.75 0 000-1.22L1.5 1.75z"/></svg>
+                        Codex
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Dispatch agent modal -->
+    <div class="modal-overlay" id="dispatch-modal" style="display:none">
+        <div class="modal" style="max-width:640px">
+            <div class="modal-title">Dispatch to Agent</div>
+            <div class="modal-body">
+                <div id="dispatch-steps" class="dispatch-steps"></div>
+                <div id="dispatch-session" class="dispatch-session"></div>
+                <details class="dispatch-prompt-details">
+                    <summary>Prompt sent</summary>
+                    <pre class="dispatch-prompt-pre" id="dispatch-prompt"></pre>
+                </details>
+            </div>
+            <div class="modal-actions">
+                <button class="modal-btn modal-btn-cancel" onclick="closeDispatchModal()">Close</button>
             </div>
         </div>
     </div>
@@ -407,6 +436,44 @@
 
         textarea.value = result;
         saveUpdate({ body: result });
+    }
+
+    function dispatchToAgent(agent) {
+        var modal = document.getElementById('dispatch-modal');
+        var stepsEl = document.getElementById('dispatch-steps');
+        var promptEl = document.getElementById('dispatch-prompt');
+        var sessionEl = document.getElementById('dispatch-session');
+        modal.style.display = '';
+        stepsEl.innerHTML = '<div class="dispatch-step pending">Dispatching to ' + agent + '...</div>';
+        promptEl.textContent = '';
+        sessionEl.textContent = '';
+
+        fetch(issueURL + '/dispatch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agent: agent })
+        }).then(res => res.json()).then(data => {
+            sessionEl.textContent = 'tmux session: ' + data.session;
+            promptEl.textContent = data.prompt;
+
+            var html = '';
+            data.steps.forEach(function(step) {
+                var icon = step.status === 'ok' ? '&#10003;' : '&#10007;';
+                var cls = step.status === 'ok' ? 'ok' : 'error';
+                html += '<div class="dispatch-step ' + cls + '">'
+                    + '<span class="dispatch-step-icon">' + icon + '</span> '
+                    + step.name
+                    + (step.detail ? ' <span class="dispatch-step-detail">(' + step.detail + ')</span>' : '')
+                    + '</div>';
+            });
+            stepsEl.innerHTML = html;
+        }).catch(function(err) {
+            stepsEl.innerHTML = '<div class="dispatch-step error">Failed: ' + err.message + '</div>';
+        });
+    }
+
+    function closeDispatchModal() {
+        document.getElementById('dispatch-modal').style.display = 'none';
     }
 
     document.addEventListener('DOMContentLoaded', initComments);

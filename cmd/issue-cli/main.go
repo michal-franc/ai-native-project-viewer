@@ -16,10 +16,6 @@ import (
 var jsonOutput bool
 
 func logAction(args []string) {
-	logDir := filepath.Join(os.TempDir(), "issue-cli-logs")
-	os.MkdirAll(logDir, 0755)
-	logFile := filepath.Join(logDir, "actions.jsonl")
-
 	entry := map[string]interface{}{
 		"ts":   time.Now().UTC().Format(time.RFC3339),
 		"pid":  os.Getpid(),
@@ -31,13 +27,23 @@ func logAction(args []string) {
 	if err != nil {
 		return
 	}
+	line = append(line, '\n')
 
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
+	// Default log location
+	logDir := filepath.Join(os.TempDir(), "issue-cli-logs")
+	os.MkdirAll(logDir, 0755)
+	if f, err := os.OpenFile(filepath.Join(logDir, "actions.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+		f.Write(line)
+		f.Close()
 	}
-	defer f.Close()
-	f.Write(append(line, '\n'))
+
+	// Agent session log (set by dispatch handler via ISSUE_CLI_LOG env var)
+	if cliLog := os.Getenv("ISSUE_CLI_LOG"); cliLog != "" {
+		if f, err := os.OpenFile(cliLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+			f.Write(line)
+			f.Close()
+		}
+	}
 }
 
 func main() {
@@ -201,6 +207,22 @@ func main() {
 	case "stats":
 		proj := loadProject(configPath, projectSlug)
 		runStats(proj)
+	case "append":
+		requireArg(cmdArgs, "append", "<slug>")
+		text := flagValue(cmdArgs[1:], "--body")
+		if text == "" {
+			text = flagValue(cmdArgs[1:], "--text")
+		}
+		if text == "" {
+			fatal("append requires --body\n\nExample:\n  issue-cli append <slug> --body \"## Test Plan\n\n### Automated\n- test 1\"")
+		}
+		proj := loadProject(configPath, projectSlug)
+		runAppend(proj, cmdArgs[0], text)
+	case "report-bug":
+		if len(cmdArgs) < 1 {
+			fatal("report-bug requires a description\n\nExample:\n  issue-cli report-bug \"transition command rejects valid status name with trailing space\"")
+		}
+		runReportBug(strings.Join(cmdArgs, " "))
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n\nRun: issue-cli help\n", cmd)
 		os.Exit(1)
@@ -427,7 +449,9 @@ Commands:
   checklist <slug>     Show checkbox status for an issue
   list                 List issues with filters (--status open|closed|<name>)
   search <query>       Search issues (supports regex, e.g. "foo|bar")
+  append <slug>        Append content to issue body (--body "## Section\ncontent")
   stats                Project health overview
+  report-bug <desc>    Report a bug in issue-cli itself
 
 Global flags:
   --config <path>      Path to projects.yaml (default: projects.yaml)
@@ -520,6 +544,7 @@ Run 'issue-cli process <topic>' for details:
   → idea                      Title only
   idea → in design            Body must have content
   in design → backlog         At least one [ ] checkbox (acceptance criteria)
+                               Side-effect: assignee is cleared
   backlog → in progress       Must have an assignee (use: issue-cli start)
   in progress → testing       Section checkboxes must be checked (e.g. ## Implementation)
   testing → human-testing     Must have ## Test Plan with ### Automated and ### Manual
@@ -578,6 +603,15 @@ Rules:
   - Only humans check off ### Manual items
   - A test results comment is required:
     issue-cli comment <slug> --text "tests: 3 unit tests added, all passing"
+
+To add a Test Plan section to an issue:
+  issue-cli append <slug> --body "## Test Plan
+
+### Automated
+- description of test
+
+### Manual
+- step for human to verify"
 `)
 	case "docs":
 		fmt.Print(`== Documentation Convention ==
@@ -986,9 +1020,15 @@ func runTransition(proj *tracker.Project, slug, to string) {
 		fatal("Cannot transition to \"%s\" — %s", to, err)
 	}
 
-	// Build update: status + template append
+	// Build update: status + template append + side-effects
 	s := to
 	update := tracker.IssueUpdate{Status: &s}
+
+	// Apply side-effects (e.g. clear_assignee on backlog)
+	sideEffects := wf.ApplySideEffects(to)
+	if sideEffects.Assignee != nil {
+		update.Assignee = sideEffects.Assignee
+	}
 
 	newBody, appended := wf.AppendTemplate(issue.BodyRaw, to)
 	if appended {
@@ -1002,6 +1042,9 @@ func runTransition(proj *tracker.Project, slug, to string) {
 
 	fmt.Printf("✓ %s → %s\n", issue.Status, to)
 	fmt.Printf("file: %s\n", issue.FilePath)
+	if update.Assignee != nil && *update.Assignee == "" {
+		fmt.Println("✓ Assignee cleared (side-effect)")
+	}
 	if appended {
 		fmt.Println("✓ Template checkboxes appended to issue body")
 	}
@@ -1298,6 +1341,52 @@ func runSearch(proj *tracker.Project, query string) {
 	for _, issue := range matches {
 		fmt.Printf("  [%-13s] %-45s %s\n", issue.Status, issue.Slug, issue.System)
 	}
+}
+
+func runAppend(proj *tracker.Project, slug, text string) {
+	issue, _ := findIssue(proj, slug)
+
+	newBody := issue.BodyRaw + "\n" + text + "\n"
+	update := tracker.IssueUpdate{Body: &newBody}
+
+	if err := tracker.UpdateIssueFrontmatter(issue.FilePath, update); err != nil {
+		fatal("Failed to append: %v", err)
+	}
+
+	fmt.Printf("✓ Appended to %s\n", issue.Slug)
+}
+
+func runReportBug(description string) {
+	entry := map[string]interface{}{
+		"ts":          time.Now().UTC().Format(time.RFC3339),
+		"description": description,
+		"tool":        "issue-cli",
+	}
+
+	line, err := json.Marshal(entry)
+	if err != nil {
+		fatal("failed to marshal: %v", err)
+	}
+	line = append(line, '\n')
+
+	// Write to agent session log dir if available
+	var logFile string
+	if cliLog := os.Getenv("ISSUE_CLI_LOG"); cliLog != "" {
+		logFile = filepath.Join(filepath.Dir(cliLog), "bugs.log")
+	} else {
+		logDir := filepath.Join(os.TempDir(), "issue-cli-logs")
+		os.MkdirAll(logDir, 0755)
+		logFile = filepath.Join(logDir, "bugs.log")
+	}
+
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fatal("failed to write bug report: %v", err)
+	}
+	defer f.Close()
+	f.Write(line)
+
+	fmt.Printf("Bug reported to %s\n", logFile)
 }
 
 func runStats(proj *tracker.Project) {

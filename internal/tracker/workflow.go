@@ -13,6 +13,7 @@ type WorkflowStatus struct {
 	Description string   `yaml:"description"`
 	Template    string   `yaml:"template"`
 	Validation  []string `yaml:"validation"`
+	SideEffects []string `yaml:"side_effects"`
 }
 
 type WorkflowConfig struct {
@@ -46,6 +47,7 @@ func DefaultWorkflow() *WorkflowConfig {
 				Name:        "backlog",
 				Description: "Ready to work on",
 				Validation:  []string{"has_checkboxes"},
+				SideEffects: []string{"clear_assignee"},
 			},
 			{
 				Name:        "in progress",
@@ -208,7 +210,7 @@ func (w *WorkflowConfig) checkRule(rule string, issue *Issue, comments []Comment
 	case "has_test_plan":
 		hasAuto, hasManual := HasTestPlan(issue.BodyRaw)
 		if !hasAuto || !hasManual {
-			return fmt.Errorf("missing test plan — add a ## Test Plan section with ### Automated and ### Manual subsections")
+			return fmt.Errorf("missing test plan — add one with:\n  issue-cli append <slug> --body \"## Test Plan\\n\\n### Automated\\n- test description\\n\\n### Manual\\n- verification step\"")
 		}
 	case "has_comment_prefix":
 		if ruleArg == "" {
@@ -221,6 +223,23 @@ func (w *WorkflowConfig) checkRule(rule string, issue *Issue, comments []Comment
 		return fmt.Errorf("unknown validation rule: %s", ruleName)
 	}
 	return nil
+}
+
+// ApplySideEffects returns an IssueUpdate with side-effects for entering the given status.
+func (w *WorkflowConfig) ApplySideEffects(toStatus string) IssueUpdate {
+	var update IssueUpdate
+	s := w.GetStatus(toStatus)
+	if s == nil {
+		return update
+	}
+	for _, effect := range s.SideEffects {
+		switch effect {
+		case "clear_assignee":
+			empty := ""
+			update.Assignee = &empty
+		}
+	}
+	return update
 }
 
 // NextStatus returns the status name that follows the given one, or empty string.

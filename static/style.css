@@ -1333,9 +1333,176 @@ a:hover { text-decoration: underline; }
     border-color: var(--text-link);
 }
 
+/* Dispatch to agent button */
+.dispatch-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 12px;
+    background: rgba(34, 197, 94, 0.1);
+    color: #22c55e;
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.dispatch-btn:hover {
+    background: rgba(34, 197, 94, 0.2);
+    border-color: rgba(34, 197, 94, 0.5);
+}
+
+.dispatch-btn-group {
+    display: flex;
+    gap: 6px;
+}
+.dispatch-btn-group .dispatch-btn {
+    flex: 1;
+}
+.dispatch-btn-codex {
+    background: rgba(99, 102, 241, 0.1);
+    color: #818cf8;
+    border-color: rgba(99, 102, 241, 0.3);
+}
+.dispatch-btn-codex:hover {
+    background: rgba(99, 102, 241, 0.2);
+    border-color: rgba(99, 102, 241, 0.5);
+}
+
+/* Dispatch modal */
+.dispatch-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+
+.dispatch-step {
+    font-size: 13px;
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-family: monospace;
+}
+
+.dispatch-step.ok {
+    background: rgba(34, 197, 94, 0.1);
+    color: #22c55e;
+}
+
+.dispatch-step.error {
+    background: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+}
+
+.dispatch-step.pending {
+    color: var(--text-muted);
+}
+
+.dispatch-step-icon {
+    font-weight: bold;
+}
+
+.dispatch-step-detail {
+    opacity: 0.7;
+    font-size: 12px;
+}
+
+.dispatch-session {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+    font-family: monospace;
+}
+
+.dispatch-prompt-details {
+    margin-top: 8px;
+}
+
+.dispatch-prompt-details summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.dispatch-prompt-pre {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    font-size: 12px;
+    max-height: 300px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin-top: 8px;
+}
+
 /* Board card wrapper (for delete button positioning) */
 .board-card-wrapper {
     position: relative;
+}
+
+.board-card-dispatch {
+    position: absolute;
+    top: 8px;
+    right: 30px;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s, background 0.15s;
+    z-index: 2;
+}
+
+.board-card-wrapper:hover .board-card-dispatch {
+    opacity: 1;
+}
+
+.board-card-dispatch:hover {
+    color: #22c55e;
+    background: rgba(34, 197, 94, 0.1);
+}
+
+/* Agent picker dropdown on board cards */
+.agent-picker {
+    display: none;
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    z-index: 10;
+    min-width: 100px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+.agent-picker.open {
+    display: block;
+}
+.agent-picker-option {
+    display: block;
+    width: 100%;
+    padding: 6px 12px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+}
+.agent-picker-option:hover {
+    background: rgba(34, 197, 94, 0.15);
+    color: #22c55e;
+}
+.agent-picker-option + .agent-picker-option {
+    border-top: 1px solid var(--border);
 }
 
 .board-card-delete {
