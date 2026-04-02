@@ -31,14 +31,18 @@ var StatusDescriptions = map[string]string{
 }
 
 type Issue struct {
-	Title    string   `yaml:"title"`
-	Status   string   `yaml:"status"`
-	System   string   `yaml:"system"`
-	Version  string   `yaml:"version"`
-	Labels   []string `yaml:"labels"`
-	Priority string   `yaml:"priority"`
-	Assignee string   `yaml:"assignee"`
-	Created  string   `yaml:"created"`
+	Title          string   `yaml:"title"`
+	Status         string   `yaml:"status"`
+	System         string   `yaml:"system"`
+	Version        string   `yaml:"version"`
+	Labels         []string `yaml:"labels"`
+	Priority       string   `yaml:"priority"`
+	Assignee       string   `yaml:"assignee"`
+	HumanApproval  string   `yaml:"human_approval"`
+	LegacyApproval string   `yaml:"approved_for"`
+	StartedAt      string   `yaml:"started_at"`
+	DoneAt         string   `yaml:"done_at"`
+	Created        string   `yaml:"created"`
 
 	// Computed fields
 	Slug     string    `yaml:"-"`
@@ -70,8 +74,72 @@ func ParseIssue(filename string, data []byte) (*Issue, error) {
 	issue.Status = strings.ToLower(strings.TrimSpace(issue.Status))
 	issue.Priority = strings.ToLower(strings.TrimSpace(issue.Priority))
 	issue.System = strings.TrimSpace(issue.System)
+	if issue.HumanApproval == "" {
+		issue.HumanApproval = strings.TrimSpace(issue.LegacyApproval)
+	}
 
 	return issue, nil
+}
+
+const (
+	issueLockRetryDelay = 25 * time.Millisecond
+	issueLockTimeout    = 15 * time.Second
+)
+
+func issueLockPath(filePath string) string {
+	return filePath + ".lock"
+}
+
+func withIssueLock(filePath string, fn func() error) error {
+	lockPath := issueLockPath(filePath)
+	deadline := time.Now().Add(issueLockTimeout)
+
+	for {
+		lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if err == nil {
+			fmt.Fprintf(lockFile, "pid=%d\ntime=%s\n", os.Getpid(), time.Now().UTC().Format(time.RFC3339Nano))
+			lockFile.Close()
+			defer os.Remove(lockPath)
+			return fn()
+		}
+		if !os.IsExist(err) {
+			return fmt.Errorf("creating lock %s: %w", lockPath, err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out waiting for issue lock %s", filePath)
+		}
+		time.Sleep(issueLockRetryDelay)
+	}
+}
+
+func writeFileAtomically(filePath string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(filePath)
+	tmp, err := os.CreateTemp(dir, filepath.Base(filePath)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file for %s: %w", filePath, err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return fmt.Errorf("setting temp permissions for %s: %w", filePath, err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return fmt.Errorf("writing temp file for %s: %w", filePath, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("syncing temp file for %s: %w", filePath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp file for %s: %w", filePath, err)
+	}
+	if err := os.Rename(tmpPath, filePath); err != nil {
+		return fmt.Errorf("replacing %s atomically: %w", filePath, err)
+	}
+	return nil
 }
 
 func LoadIssues(dir string) ([]*Issue, error) {
@@ -107,6 +175,10 @@ func LoadIssues(dir string) ([]*Issue, error) {
 		baseDir, _ := filepath.Rel(dir, relDir)
 		if baseDir != "" && baseDir != "." {
 			issue.Slug = strings.ToLower(baseDir) + "/" + issue.Slug
+			// Auto-detect system from subdirectory if not set in frontmatter
+			if issue.System == "" {
+				issue.System = baseDir
+			}
 		}
 
 		issues = append(issues, issue)
@@ -134,15 +206,77 @@ func LoadIssues(dir string) ([]*Issue, error) {
 }
 
 type IssueUpdate struct {
-	Status   *string  `json:"status,omitempty"`
-	Priority *string  `json:"priority,omitempty"`
-	Version  *string  `json:"version,omitempty"`
-	Assignee *string  `json:"assignee,omitempty"`
-	Labels   []string `json:"labels,omitempty"`
-	Body     *string  `json:"body,omitempty"`
+	Status        *string  `json:"status,omitempty"`
+	Priority      *string  `json:"priority,omitempty"`
+	Version       *string  `json:"version,omitempty"`
+	Assignee      *string  `json:"assignee,omitempty"`
+	HumanApproval *string  `json:"human_approval,omitempty"`
+	StartedAt     *string  `json:"started_at,omitempty"`
+	DoneAt        *string  `json:"done_at,omitempty"`
+	Labels        []string `json:"labels,omitempty"`
+	Body          *string  `json:"body,omitempty"`
 }
 
-func UpdateIssueFrontmatter(filePath string, update IssueUpdate) error {
+// UpdateIssueBody applies a body transformation while holding the issue lock.
+// It reloads the current body under the lock so callers do not overwrite newer edits
+// based on a stale pre-lock snapshot.
+func UpdateIssueBody(filePath string, update func(body string) (string, bool, error)) (string, bool, error) {
+	var updatedBody string
+	var changed bool
+
+	err := withIssueLock(filePath, func() error {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", filePath, err)
+		}
+
+		content := string(data)
+		if !strings.HasPrefix(content, "---") {
+			return fmt.Errorf("no frontmatter in %s", filePath)
+		}
+
+		parts := strings.SplitN(content[3:], "---", 2)
+		if len(parts) < 2 {
+			return fmt.Errorf("invalid frontmatter in %s", filePath)
+		}
+
+		fmRaw := parts[0]
+		bodyWithComments := parts[1]
+		body, existingComments := ParseComments(bodyWithComments)
+		body = strings.TrimSpace(body)
+
+		nextBody, ok, err := update(body)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			updatedBody = body
+			return nil
+		}
+
+		updatedBody = nextBody
+		changed = true
+
+		var out strings.Builder
+		out.WriteString("---")
+		out.WriteString(fmRaw)
+		out.WriteString("---")
+		out.WriteString("\n")
+		out.WriteString(nextBody)
+		out.WriteString("\n")
+		out.WriteString(SerializeComments(existingComments))
+
+		info, err := os.Stat(filePath)
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", filePath, err)
+		}
+		return writeFileAtomically(filePath, []byte(out.String()), info.Mode().Perm())
+	})
+
+	return updatedBody, changed, err
+}
+
+func updateIssueFrontmatterLocked(filePath string, update IssueUpdate) error {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", filePath, err)
@@ -161,22 +295,18 @@ func UpdateIssueFrontmatter(filePath string, update IssueUpdate) error {
 	fmRaw := parts[0]
 	body := parts[1]
 
-	// Line-level frontmatter editing to preserve ordering, types, and unmodified fields
 	setScalar := func(fm, key, value string) string {
 		re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:.*$`)
 		newLine := key + `: "` + value + `"`
 		if re.MatchString(fm) {
 			return re.ReplaceAllString(fm, newLine)
 		}
-		// Append before the end
 		return strings.TrimRight(fm, "\n") + "\n" + newLine + "\n"
 	}
 
 	removeField := func(fm, key string) string {
-		// Remove scalar field
 		re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:.*\n?`)
 		fm = re.ReplaceAllString(fm, "")
-		// Remove list field (key: followed by indented - lines)
 		reList := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:\s*\n([ \t]+-[^\n]*\n?)*`)
 		fm = reList.ReplaceAllString(fm, "")
 		return fm
@@ -219,6 +349,28 @@ func UpdateIssueFrontmatter(filePath string, update IssueUpdate) error {
 			fmRaw = setScalar(fmRaw, "assignee", *update.Assignee)
 		}
 	}
+	if update.HumanApproval != nil {
+		fmRaw = removeField(fmRaw, "approved_for")
+		if *update.HumanApproval == "" {
+			fmRaw = removeField(fmRaw, "human_approval")
+		} else {
+			fmRaw = setScalar(fmRaw, "human_approval", *update.HumanApproval)
+		}
+	}
+	if update.StartedAt != nil {
+		if *update.StartedAt == "" {
+			fmRaw = removeField(fmRaw, "started_at")
+		} else {
+			fmRaw = setScalar(fmRaw, "started_at", *update.StartedAt)
+		}
+	}
+	if update.DoneAt != nil {
+		if *update.DoneAt == "" {
+			fmRaw = removeField(fmRaw, "done_at")
+		} else {
+			fmRaw = setScalar(fmRaw, "done_at", *update.DoneAt)
+		}
+	}
 	if update.Labels != nil {
 		fmRaw = setLabels(fmRaw, update.Labels)
 	}
@@ -234,7 +386,17 @@ func UpdateIssueFrontmatter(filePath string, update IssueUpdate) error {
 	out.WriteString("---")
 	out.WriteString(body)
 
-	return os.WriteFile(filePath, []byte(out.String()), 0644)
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", filePath, err)
+	}
+	return writeFileAtomically(filePath, []byte(out.String()), info.Mode().Perm())
+}
+
+func UpdateIssueFrontmatter(filePath string, update IssueUpdate) error {
+	return withIssueLock(filePath, func() error {
+		return updateIssueFrontmatterLocked(filePath, update)
+	})
 }
 
 // DeleteIssue removes the issue markdown file and its comment sidecar if present.
@@ -308,7 +470,7 @@ func CreateIssueFileOpts(issueDir string, opts CreateIssueOpts) (filePath, slug 
 		content.WriteString("\n")
 	}
 
-	if err := os.WriteFile(filename, []byte(content.String()), 0644); err != nil {
+	if err := writeFileAtomically(filename, []byte(content.String()), 0644); err != nil {
 		return "", "", fmt.Errorf("creating issue: %w", err)
 	}
 
@@ -317,6 +479,22 @@ func CreateIssueFileOpts(issueDir string, opts CreateIssueOpts) (filePath, slug 
 	}
 
 	return filename, slug, nil
+}
+
+// CollectSubdirSystems returns the names of immediate subdirectories in dir.
+// This captures systems that exist as folders even if they contain no issues.
+func CollectSubdirSystems(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var systems []string
+	for _, e := range entries {
+		if e.IsDir() {
+			systems = append(systems, e.Name())
+		}
+	}
+	return systems
 }
 
 func CollectFilterValues(issues []*Issue) (statuses, systems, priorities, labels, assignees []string) {

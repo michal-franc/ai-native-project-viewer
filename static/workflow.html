@@ -156,7 +156,7 @@ code { background: var(--bg-t); padding: 2px 6px; border-radius: 4px; font-size:
         <div class="step-num agent">3</div>
         <div class="step-content">
             <div class="title">Start work with <code>issue-cli start &lt;slug&gt;</code></div>
-            <div class="detail">This is the critical step. <code>start</code> does three things: claims the issue, transitions it to <strong>in progress</strong>, and shows next steps with checklist items. <strong>Do NOT use <code>claim</code> to begin work</strong> &mdash; it only sets the assignee without transitioning.</div>
+            <div class="detail">This is the critical step. For backlog issues, <code>start</code> only works after a human approves <strong>in progress</strong> in the viewer. Then it claims the issue, transitions it to <strong>in progress</strong>, and shows next steps with checklist items. <strong>Do NOT use <code>claim</code> to begin work</strong> &mdash; it only sets the assignee without transitioning.</div>
         </div>
     </div>
     <div class="step">
@@ -317,7 +317,7 @@ code { background: var(--bg-t); padding: 2px 6px; border-radius: 4px; font-size:
     <div class="rule">
         <div class="icon">&#9654;</div>
         <div class="rule-title">Use <code>start</code>, not <code>claim</code></div>
-        <div class="rule-desc"><code>start</code> claims AND transitions to in-progress. <code>claim</code> only sets the assignee &mdash; the issue stays in backlog.</div>
+        <div class="rule-desc"><code>start</code> begins approved backlog work, then claims and transitions to in-progress. <code>claim</code> only sets the assignee &mdash; the issue stays in backlog.</div>
     </div>
     <div class="rule">
         <div class="icon">&#8594;</div>

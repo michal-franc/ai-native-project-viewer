@@ -88,6 +88,7 @@ func TestProjectLoadWorkflow_WithFile(t *testing.T) {
 	content := `statuses:
   - name: "todo"
     description: "To do"
+    prompt: "Clarify and scope the work"
   - name: "done"
     description: "Complete"
 systems:
@@ -108,19 +109,25 @@ systems:
 
 	wf := p.LoadWorkflow()
 
-	// "done" exists in defaults — description should be overridden
+	// Explicit workflow files are the source of truth and should not be merged
+	// with built-in defaults.
 	doneStatus := wf.GetStatus("done")
 	if doneStatus == nil || doneStatus.Description != "Complete" {
 		t.Errorf("done description = %q, want %q", doneStatus.Description, "Complete")
 	}
-	// "todo" is new — should be appended after defaults
 	todoStatus := wf.GetStatus("todo")
 	if todoStatus == nil || todoStatus.Description != "To do" {
 		t.Errorf("todo not found or description wrong")
 	}
+	if todoStatus == nil || todoStatus.Prompt != "Clarify and scope the work" {
+		t.Errorf("todo prompt = %q, want %q", todoStatus.Prompt, "Clarify and scope the work")
+	}
 	order := wf.GetStatusOrder()
-	if order[len(order)-1] != "todo" {
-		t.Errorf("expected todo appended at end, got order = %v", order)
+	if len(order) != 2 || order[0] != "todo" || order[1] != "done" {
+		t.Errorf("expected explicit workflow order, got %v", order)
+	}
+	if wf.GetStatus("idea") != nil {
+		t.Errorf("did not expect built-in statuses to be merged in: %v", wf.GetStatusOrder())
 	}
 
 	combat := p.LoadWorkflowForSystem("Combat")

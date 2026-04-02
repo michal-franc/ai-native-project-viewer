@@ -76,12 +76,12 @@ func TestIsValidTransition(t *testing.T) {
 	}{
 		{"idea", "in design", true},
 		{"in progress", "testing", true},
-		{"idea", "done", false},           // skip
-		{"done", "idea", false},           // backwards
-		{"unknown", "idea", false},        // unknown from
-		{"idea", "unknown", false},        // unknown to
-		{"idea", "idea", false},           // same
-		{"none", "idea", false},           // none no longer exists
+		{"idea", "done", false},    // skip
+		{"done", "idea", false},    // backwards
+		{"unknown", "idea", false}, // unknown from
+		{"idea", "unknown", false}, // unknown to
+		{"idea", "idea", false},    // same
+		{"none", "idea", false},    // none no longer exists
 		{"testing", "human-testing", true},
 		{"human-testing", "documentation", true},
 		{"documentation", "done", true},
@@ -107,6 +107,36 @@ func TestGetStatusDescriptions(t *testing.T) {
 	}
 	if descs["human-testing"] != "Manual verification by humans" {
 		t.Errorf("human-testing description = %q", descs["human-testing"])
+	}
+}
+
+func TestDefaultWorkflowPromptsAndApprovals(t *testing.T) {
+	wf := DefaultWorkflow()
+
+	if got := wf.StatusPrompt("backlog"); !strings.Contains(got, "Do not run `issue-cli start`") {
+		t.Fatalf("backlog prompt = %q, want start approval guidance", got)
+	}
+
+	if got := wf.RequiredHumanApproval("backlog", "in progress"); got != "in progress" {
+		t.Fatalf("RequiredHumanApproval(backlog, in progress) = %q, want in progress", got)
+	}
+
+	if got := wf.RequiredHumanApproval("in progress", "testing"); got != "" {
+		t.Fatalf("RequiredHumanApproval(in progress, testing) = %q, want empty", got)
+	}
+
+	apiOverlay, ok := wf.Systems["API"]
+	if !ok {
+		t.Fatal("default workflow missing API overlay")
+	}
+
+	merged := DefaultWorkflow()
+	merged.Merge(&WorkflowConfig{
+		Statuses:    apiOverlay.Statuses,
+		Transitions: apiOverlay.Transitions,
+	})
+	if got := merged.StatusPrompt("in design"); !strings.Contains(got, "/hash") {
+		t.Fatalf("merged API in-design prompt = %q, want /hash guidance", got)
 	}
 }
 
@@ -203,10 +233,10 @@ func TestAppendToSection(t *testing.T) {
 
 	t.Run("reuses existing section", func(t *testing.T) {
 		body, changed := appendToSection("## Testing\n- [ ] existing", "Testing", "- [ ] new item")
-		if !changed {
-			t.Fatal("expected section reuse append")
+		if changed {
+			t.Fatal("expected no change when section already exists")
 		}
-		want := "## Testing\n- [ ] existing\n\n- [ ] new item"
+		want := "## Testing\n- [ ] existing"
 		if body != want {
 			t.Errorf("body = %q, want %q", body, want)
 		}
@@ -218,6 +248,16 @@ func TestAppendToSection(t *testing.T) {
 			t.Fatal("expected no change for duplicate content")
 		}
 		if body != "## Testing\n- [ ] same" {
+			t.Errorf("body changed: %q", body)
+		}
+	})
+
+	t.Run("does not append into existing section with different content", func(t *testing.T) {
+		body, changed := appendToSection("## Design\n- [ ] existing item", "Design", "- [ ] another item")
+		if changed {
+			t.Fatal("expected existing section to be left unchanged")
+		}
+		if body != "## Design\n- [ ] existing item" {
 			t.Errorf("body changed: %q", body)
 		}
 	})
@@ -243,7 +283,7 @@ func TestValidate(t *testing.T) {
 	})
 
 	t.Run("has_checkboxes passes", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "- [ ] task 1", ApprovedFor: "backlog"}
+		issue := &Issue{BodyRaw: "- [ ] task 1", HumanApproval: "backlog"}
 		err := wf.Validate(issue, "backlog", nil)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
@@ -251,14 +291,14 @@ func TestValidate(t *testing.T) {
 	})
 
 	t.Run("has_checkboxes fails", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "No checkboxes here", ApprovedFor: "backlog"}
+		issue := &Issue{BodyRaw: "No checkboxes here", HumanApproval: "backlog"}
 		err := wf.Validate(issue, "backlog", nil)
 		if err == nil {
 			t.Fatal("expected error")
 		}
 	})
 
-	t.Run("approved_for blocks backlog", func(t *testing.T) {
+	t.Run("human_approval blocks backlog", func(t *testing.T) {
 		issue := &Issue{BodyRaw: "- [ ] task 1"}
 		err := wf.Validate(issue, "backlog", nil)
 		if err == nil {
@@ -266,8 +306,8 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("approved_for wrong status", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "- [ ] task 1", ApprovedFor: "testing"}
+	t.Run("human_approval wrong status", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "- [ ] task 1", HumanApproval: "testing"}
 		err := wf.Validate(issue, "backlog", nil)
 		if err == nil {
 			t.Fatal("expected error for wrong approval status")
@@ -275,7 +315,7 @@ func TestValidate(t *testing.T) {
 	})
 
 	t.Run("has_assignee passes", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "content", Assignee: "alice"}
+		issue := &Issue{BodyRaw: "content", Assignee: "alice", HumanApproval: "in progress"}
 		err := wf.Validate(issue, "in progress", nil)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
@@ -398,7 +438,7 @@ func TestValidate(t *testing.T) {
 	})
 
 	t.Run("documentation passes with approval", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "content", ApprovedFor: "documentation"}
+		issue := &Issue{BodyRaw: "content", HumanApproval: "documentation"}
 		err := wf.Validate(issue, "documentation", nil)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
@@ -406,7 +446,7 @@ func TestValidate(t *testing.T) {
 	})
 
 	t.Run("has_comment_prefix docs: passes for done", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "content", ApprovedFor: "done"}
+		issue := &Issue{BodyRaw: "content", HumanApproval: "done"}
 		comments := []Comment{{Text: "docs: updated docs"}}
 		err := wf.Validate(issue, "done", comments)
 		if err != nil {
@@ -415,7 +455,7 @@ func TestValidate(t *testing.T) {
 	})
 
 	t.Run("has_comment_prefix docs: fails for done", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "content", ApprovedFor: "done"}
+		issue := &Issue{BodyRaw: "content", HumanApproval: "done"}
 		comments := []Comment{{Text: "some other comment"}}
 		err := wf.Validate(issue, "done", comments)
 		if err == nil {
@@ -464,7 +504,7 @@ func TestValidateTransition_WithActions(t *testing.T) {
 		t.Fatal("expected missing approval to fail")
 	}
 
-	err = wf.ValidateTransition(&Issue{Slug: "x", Assignee: "alice", ApprovedFor: "in progress"}, "backlog", "in progress", nil)
+	err = wf.ValidateTransition(&Issue{Slug: "x", Assignee: "alice", HumanApproval: "in progress"}, "backlog", "in progress", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -489,7 +529,7 @@ func TestApplyTransition(t *testing.T) {
 		},
 	}
 
-	issue := &Issue{BodyRaw: "Existing", ApprovedFor: "in progress"}
+	issue := &Issue{BodyRaw: "Existing", HumanApproval: "in progress"}
 	result := wf.ApplyTransition(issue, "backlog", "in progress")
 
 	if result.Update.Status == nil || *result.Update.Status != "in progress" {
@@ -498,14 +538,264 @@ func TestApplyTransition(t *testing.T) {
 	if result.Update.Assignee == nil || *result.Update.Assignee != "" {
 		t.Fatalf("assignee update = %#v", result.Update.Assignee)
 	}
-	if result.Update.ApprovedFor == nil || *result.Update.ApprovedFor != "" {
-		t.Fatalf("approved_for update = %#v", result.Update.ApprovedFor)
+	if result.Update.HumanApproval == nil || *result.Update.HumanApproval != "" {
+		t.Fatalf("human_approval update = %#v", result.Update.HumanApproval)
 	}
 	if result.Update.Body == nil || !strings.Contains(*result.Update.Body, "## Implementation") {
 		t.Fatalf("body update missing implementation section: %#v", result.Update.Body)
 	}
 	if len(result.InjectedPrompts) != 1 || result.InjectedPrompts[0] != "Implement carefully" {
 		t.Fatalf("unexpected prompts: %#v", result.InjectedPrompts)
+	}
+}
+
+func TestApplyTransition_DoesNotDuplicateExistingSection(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "idea"},
+			{Name: "in design"},
+		},
+		Transitions: []WorkflowTransition{
+			{
+				From: "idea",
+				To:   "in design",
+				Actions: []WorkflowAction{
+					{Type: "append_section", Title: "Idea", Body: "- [ ] Problem described clearly"},
+					{Type: "append_section", Title: "Design", Body: "- [ ] Acceptance criteria defined as checkboxes"},
+				},
+			},
+		},
+	}
+
+	body := "## Idea\n- [ ] Problem described clearly\n\n## Design\n- [ ] Existing design checklist"
+	issue := &Issue{BodyRaw: body}
+	result := wf.ApplyTransition(issue, "idea", "in design")
+
+	if result.Update.Body != nil {
+		t.Fatalf("expected no body update, got %#v", *result.Update.Body)
+	}
+	if result.BodyChanged {
+		t.Fatal("expected body to remain unchanged")
+	}
+	if issue.BodyRaw != body {
+		t.Fatalf("issue body changed:\n%s", issue.BodyRaw)
+	}
+}
+
+func TestApplyTransition_SecondRunIsIdempotent(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "idea"},
+			{Name: "in design"},
+		},
+		Transitions: []WorkflowTransition{
+			{
+				From: "idea",
+				To:   "in design",
+				Actions: []WorkflowAction{
+					{Type: "append_section", Title: "Idea", Body: "- [ ] Problem described clearly"},
+					{Type: "append_section", Title: "Design", Body: "- [ ] Acceptance criteria defined as checkboxes"},
+				},
+			},
+		},
+	}
+
+	issue := &Issue{BodyRaw: "Problem statement"}
+
+	first := wf.ApplyTransition(issue, "idea", "in design")
+	if !first.BodyChanged || first.Update.Body == nil {
+		t.Fatalf("expected first transition to scaffold body, got %#v", first)
+	}
+
+	bodyAfterFirst := issue.BodyRaw
+	second := wf.ApplyTransition(issue, "idea", "in design")
+
+	if second.Update.Body != nil {
+		t.Fatalf("expected second transition to skip body update, got %#v", *second.Update.Body)
+	}
+	if second.BodyChanged {
+		t.Fatalf("expected second transition to leave body unchanged, got %#v", second)
+	}
+	if issue.BodyRaw != bodyAfterFirst {
+		t.Fatalf("issue body changed on second run:\n%s", issue.BodyRaw)
+	}
+}
+
+func TestPreviewTransition(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "backlog"},
+			{Name: "in progress"},
+		},
+		Transitions: []WorkflowTransition{
+			{
+				From: "backlog",
+				To:   "in progress",
+				Actions: []WorkflowAction{
+					{Type: "validate", Rule: "has_assignee"},
+					{Type: "append_section", Title: "Implementation", Body: "- [ ] Code complete"},
+					{Type: "inject_prompt", Prompt: "Implement carefully"},
+					{Type: "set_fields", Field: "assignee", Value: ""},
+				},
+			},
+		},
+	}
+
+	preview := wf.PreviewTransition(&Issue{Slug: "x", BodyRaw: "Existing", Assignee: "alice"}, "backlog", "in progress", "", nil)
+
+	if !preview.Allowed {
+		t.Fatalf("preview unexpectedly blocked: %#v", preview)
+	}
+	if len(preview.Steps) != 4 {
+		t.Fatalf("steps = %d, want 4", len(preview.Steps))
+	}
+	if preview.Steps[0].Outcome != "passed" {
+		t.Fatalf("first step outcome = %q, want passed", preview.Steps[0].Outcome)
+	}
+	if preview.Steps[1].Outcome != "changed" {
+		t.Fatalf("append step outcome = %q, want changed", preview.Steps[1].Outcome)
+	}
+	if preview.Result.Update.Status == nil || *preview.Result.Update.Status != "in progress" {
+		t.Fatalf("status update = %#v", preview.Result.Update.Status)
+	}
+}
+
+func TestStartIssueOnce_RejectsSecondRun(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "issue.md")
+	content := `---
+title: "Sample"
+status: "backlog"
+human_approval: "in progress"
+---
+
+Body.
+`
+	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
+		t.Fatalf("write issue: %v", err)
+	}
+
+	wf := DefaultWorkflow()
+	first, err := wf.StartIssueOnce(fp, "sample", "alice")
+	if err != nil {
+		t.Fatalf("first start failed: %v", err)
+	}
+	if first.Issue.StartedAt == "" {
+		t.Fatal("started_at should be recorded")
+	}
+
+	if _, err := wf.StartIssueOnce(fp, "sample", "alice"); err == nil {
+		t.Fatal("second start should fail")
+	}
+}
+
+func TestMarkIssueDoneOnce_RejectsSecondRun(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "issue.md")
+	content := `---
+title: "Sample"
+status: "documentation"
+assignee: "alice"
+human_approval: "done"
+---
+
+## Documentation
+- [x] User-facing docs updated if behavior changed
+- [x] docs: comment prepared with the documentation changes
+
+<!-- issue-viewer-comments
+{"id":1,"block":0,"date":"2025-01-15","text":"docs: updated docs","status":"open","source":"cli"}
+-->
+`
+	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
+		t.Fatalf("write issue: %v", err)
+	}
+
+	wf := DefaultWorkflow()
+	issue, err := wf.MarkIssueDoneOnce(fp, "sample")
+	if err != nil {
+		t.Fatalf("first done failed: %v", err)
+	}
+	if issue.DoneAt == "" {
+		t.Fatal("done_at should be recorded")
+	}
+	if issue.Status != "done" {
+		t.Fatalf("status = %q, want done", issue.Status)
+	}
+
+	if _, err := wf.MarkIssueDoneOnce(fp, "sample"); err == nil {
+		t.Fatal("second done should fail")
+	}
+}
+
+func TestPreviewTransition_SkipsExistingSection(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "idea"},
+			{Name: "in design"},
+		},
+		Transitions: []WorkflowTransition{
+			{
+				From: "idea",
+				To:   "in design",
+				Actions: []WorkflowAction{
+					{Type: "append_section", Title: "Idea", Body: "- [ ] Problem described clearly"},
+				},
+			},
+		},
+	}
+
+	body := "## Idea\n- [ ] Existing content"
+	preview := wf.PreviewTransition(&Issue{Slug: "x", BodyRaw: body}, "idea", "in design", "", nil)
+
+	if !preview.Allowed {
+		t.Fatalf("preview unexpectedly blocked: %#v", preview)
+	}
+	if len(preview.Steps) != 1 {
+		t.Fatalf("steps = %d, want 1", len(preview.Steps))
+	}
+	if preview.Steps[0].Outcome != "skipped" {
+		t.Fatalf("step outcome = %q, want skipped", preview.Steps[0].Outcome)
+	}
+	if preview.Result.Update.Body != nil {
+		t.Fatalf("expected no body update, got %#v", *preview.Result.Update.Body)
+	}
+	if preview.Result.BodyChanged {
+		t.Fatalf("expected preview result to leave body unchanged, got %#v", preview.Result)
+	}
+}
+
+func TestPreviewTransition_Failure(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "backlog"},
+			{Name: "in progress"},
+		},
+		Transitions: []WorkflowTransition{
+			{
+				From: "backlog",
+				To:   "in progress",
+				Actions: []WorkflowAction{
+					{Type: "validate", Rule: "has_assignee"},
+					{Type: "require_human_approval", Status: "in progress"},
+				},
+			},
+		},
+	}
+
+	preview := wf.PreviewTransition(&Issue{Slug: "x"}, "backlog", "in progress", "", nil)
+
+	if preview.Allowed {
+		t.Fatal("expected preview to be blocked")
+	}
+	if preview.ValidationError == "" {
+		t.Fatal("expected validation error")
+	}
+	if len(preview.Steps) != 1 {
+		t.Fatalf("steps = %d, want 1", len(preview.Steps))
+	}
+	if preview.Steps[0].Outcome != "failed" {
+		t.Fatalf("step outcome = %q, want failed", preview.Steps[0].Outcome)
 	}
 }
 
@@ -540,6 +830,7 @@ func TestLoadWorkflow(t *testing.T) {
 	content := `statuses:
   - name: "todo"
     description: "To do"
+    prompt: "Clarify the work before starting"
   - name: "doing"
     description: "In progress"
   - name: "done"
@@ -573,6 +864,9 @@ systems:
 	if wf.Statuses[0].Name != "todo" {
 		t.Errorf("first status = %q, want %q", wf.Statuses[0].Name, "todo")
 	}
+	if wf.Statuses[0].Prompt != "Clarify the work before starting" {
+		t.Errorf("prompt = %q, want %q", wf.Statuses[0].Prompt, "Clarify the work before starting")
+	}
 
 	if len(wf.Transitions) != 1 {
 		t.Fatalf("got %d transitions, want 1", len(wf.Transitions))
@@ -582,6 +876,35 @@ systems:
 	}
 	if _, ok := wf.Systems["Combat"]; !ok {
 		t.Fatal("expected Combat system overlay")
+	}
+}
+
+func TestEntryPrompts(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "backlog"},
+			{Name: "in progress", Prompt: "Implement according to the accepted design."},
+		},
+		Transitions: []WorkflowTransition{
+			{
+				From: "backlog",
+				To:   "in progress",
+				Actions: []WorkflowAction{
+					{Type: "inject_prompt", Prompt: "Update the Implementation section while coding."},
+				},
+			},
+		},
+	}
+
+	prompts := wf.EntryPrompts("backlog", "in progress")
+	if len(prompts) != 2 {
+		t.Fatalf("got %d prompts, want 2", len(prompts))
+	}
+	if prompts[0] != "Implement according to the accepted design." {
+		t.Fatalf("status prompt = %q", prompts[0])
+	}
+	if prompts[1] != "Update the Implementation section while coding." {
+		t.Fatalf("transition prompt = %q", prompts[1])
 	}
 }
 

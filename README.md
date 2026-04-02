@@ -31,10 +31,12 @@ Open `http://localhost:8080` to see a sample project with issues and docs.
 - **Documentation** viewer with folder tree sidebar
 - **Multi-project** support via `projects.yaml`
 - **Inline editing** — change status, priority, version, labels, assignee, and body from the UI
+- **External body editing** — open an issue body in `nvim` from the detail view using the same local `tmux`/terminal workspace flow as agent sessions
 - **Inline comments** on issue body blocks with open/done status
 - **Issue references** — `#123` auto-links to other issues
 - **Theme picker** — dark, dracula, light
 - **Agent dispatch** — send issues to Claude or Codex from the board (hover play button) or detail view
+- **Live agent activity** — tmux session names that match issue slugs show active-agent badges on list and board views, session details on the issue page, and a project-level active bot count in the header
 
 ### CLI (`issue-cli`)
 
@@ -45,7 +47,7 @@ Open `http://localhost:8080` to see a sample project with issues and docs.
 - **Status aliases** — `--status open` (all non-done) and `--status closed` (done only)
 - **Category alias** — `--category` works as alias for `--system`
 - **Checkbox management** — `check` command to tick off checklist items by text match
-- **Configurable workflows** — custom statuses, templates, validation rules, and side-effects via `workflow.yaml`
+- **Configurable workflows** — custom statuses, status prompts, validation rules, transition actions, and side-effects via `workflow.yaml`
 - **Workflow side-effects** — automatic actions on transition (e.g., `clear_assignee` when entering backlog)
 
 ### Syncing
@@ -74,7 +76,7 @@ make install
 | Command                | Description                                                  |
 |:-----------------------|:-------------------------------------------------------------|
 | `process`              | Learn how the project works (run this first)                 |
-| `start <slug>`        | Claim issue, transition to in-progress, show next steps      |
+| `start <slug>`        | Claim approved backlog issue, transition to in-progress, show next steps |
 | `next --version <v>`  | Find work for a version (backlog + in-progress + testing)    |
 | `next --design`       | Find ideas and in-design issues needing design work          |
 | `context <slug>`      | Full context dump (body, comments, checklist)                |
@@ -113,7 +115,7 @@ make install
 The CLI enforces strict status progression for bots:
 
 - **`create`** — only allows `idea` or `in design` status
-- **`start`** — only transitions from `backlog` to `in progress`
+- **`start`** — only transitions from `backlog` to `in progress`, and only after human approval for `in progress`
 - **`transition`** — sequential only, one step at a time
 - **`done`** — only from `documentation` status
 

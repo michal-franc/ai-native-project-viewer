@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -170,6 +171,49 @@ Sub body.
 	}
 }
 
+func TestLoadIssues_SystemFromSubdir(t *testing.T) {
+	dir := t.TempDir()
+
+	// Issue in subdirectory without system in frontmatter
+	subDir := filepath.Join(dir, "Combat")
+	os.MkdirAll(subDir, 0755)
+	os.WriteFile(filepath.Join(subDir, "no-system.md"), []byte(`---
+title: "No System Field"
+status: "idea"
+---
+
+Body.
+`), 0644)
+
+	// Issue in subdirectory WITH system in frontmatter (should keep frontmatter value)
+	os.WriteFile(filepath.Join(subDir, "has-system.md"), []byte(`---
+title: "Has System Field"
+status: "idea"
+system: "OverrideSystem"
+---
+
+Body.
+`), 0644)
+
+	issues, err := LoadIssues(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, iss := range issues {
+		switch iss.Title {
+		case "No System Field":
+			if iss.System != "Combat" {
+				t.Errorf("expected system 'Combat' from subdir, got %q", iss.System)
+			}
+		case "Has System Field":
+			if iss.System != "OverrideSystem" {
+				t.Errorf("expected system 'OverrideSystem' from frontmatter, got %q", iss.System)
+			}
+		}
+	}
+}
+
 func TestLoadIssues_SlugCollision(t *testing.T) {
 	dir := t.TempDir()
 
@@ -328,6 +372,76 @@ Old body.
 	}
 }
 
+func TestUpdateIssueFrontmatter_HumanApprovalReplacesLegacyApproval(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "test.md")
+
+	original := `---
+title: "Test"
+approved_for: "backlog"
+---
+
+Body.
+`
+	os.WriteFile(fp, []byte(original), 0644)
+
+	approval := "documentation"
+	err := UpdateIssueFrontmatter(fp, IssueUpdate{
+		HumanApproval: &approval,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, _ := os.ReadFile(fp)
+	content := string(data)
+	if strings.Contains(content, "approved_for") {
+		t.Error("legacy approved_for should have been removed")
+	}
+	if !strings.Contains(content, `human_approval: "documentation"`) {
+		t.Error("human_approval should have been written")
+	}
+}
+
+func TestUpdateIssueFrontmatter_ConcurrentWritesRemainParseable(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "test.md")
+
+	original := `---
+title: "Test"
+status: "idea"
+---
+
+Body.
+`
+	os.WriteFile(fp, []byte(original), 0644)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body := "Body update " + string(rune('A'+i))
+			status := "in progress"
+			if i%2 == 0 {
+				status = "testing"
+			}
+			if err := UpdateIssueFrontmatter(fp, IssueUpdate{Status: &status, Body: &body}); err != nil {
+				t.Errorf("update %d failed: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("read final file: %v", err)
+	}
+	if _, err := ParseIssue("test.md", data); err != nil {
+		t.Fatalf("final file should still parse after concurrent writes: %v\n%s", err, string(data))
+	}
+}
+
 func TestDeleteIssue(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "test.md")
@@ -483,11 +597,11 @@ func TestValidTransition(t *testing.T) {
 	}{
 		{"idea", "in design", true},
 		{"in progress", "testing", true},
-		{"idea", "done", false},         // skip not allowed
-		{"done", "idea", false},         // backwards not allowed
-		{"unknown", "idea", false},      // unknown status
-		{"idea", "unknown", false},      // unknown status
-		{"none", "idea", false},         // none no longer exists
+		{"idea", "done", false},    // skip not allowed
+		{"done", "idea", false},    // backwards not allowed
+		{"unknown", "idea", false}, // unknown status
+		{"idea", "unknown", false}, // unknown status
+		{"none", "idea", false},    // none no longer exists
 		{"testing", "human-testing", true},
 		{"documentation", "done", true},
 	}

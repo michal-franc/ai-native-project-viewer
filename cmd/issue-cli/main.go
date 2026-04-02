@@ -16,6 +16,25 @@ import (
 
 var jsonOutput bool
 
+type transitionChecklistItem struct {
+	Text    string `json:"text"`
+	Checked bool   `json:"checked"`
+}
+
+type transitionOutput struct {
+	From            string                    `json:"from"`
+	To              string                    `json:"to"`
+	Status          string                    `json:"status"`
+	Slug            string                    `json:"slug"`
+	File            string                    `json:"file"`
+	SideEffects     []string                  `json:"side_effects"`
+	Checklist       []transitionChecklistItem `json:"checklist"`
+	BodyChanged     bool                      `json:"body_changed"`
+	CommentsChanged bool                      `json:"comments_changed"`
+	NextStatus      string                    `json:"next_status,omitempty"`
+	Guidance        []string                  `json:"guidance,omitempty"`
+}
+
 func logAction(args []string) {
 	entry := map[string]interface{}{
 		"ts":   time.Now().UTC().Format(time.RFC3339),
@@ -219,6 +238,26 @@ func main() {
 		}
 		proj := loadProject(configPath, projectSlug)
 		runAppend(proj, cmdArgs[0], text)
+	case "retrospective":
+		requireArg(cmdArgs, "retrospective", "<slug>")
+		text := flagValue(cmdArgs[1:], "--body")
+		if text == "" {
+			text = flagValue(cmdArgs[1:], "--text")
+		}
+		if text == "" {
+			var parts []string
+			for _, a := range cmdArgs[1:] {
+				if !strings.HasPrefix(a, "--") {
+					parts = append(parts, a)
+				}
+			}
+			text = strings.Join(parts, " ")
+		}
+		if text == "" {
+			fatal("retrospective requires --body\n\nExample:\n  issue-cli retrospective %s --body \"Base workflow: ...\nSubsystem workflow: ...\nTooling friction: ...\"", cmdArgs[0])
+		}
+		proj := loadProject(configPath, projectSlug)
+		runRetrospective(proj, cmdArgs[0], text)
 	case "report-bug":
 		if len(cmdArgs) < 1 {
 			fatal("report-bug requires a description\n\nExample:\n  issue-cli report-bug \"transition command rejects valid status name with trailing space\"")
@@ -346,6 +385,25 @@ func agentNameForSlug(slug string) string {
 	return "agent-" + base
 }
 
+func projectRoot(proj *tracker.Project) string {
+	if proj != nil && proj.WorkDir != "" {
+		return proj.WorkDir
+	}
+	if proj != nil && proj.IssueDir != "" {
+		if abs, err := filepath.Abs(proj.IssueDir); err == nil {
+			return filepath.Dir(abs)
+		}
+		return filepath.Dir(proj.IssueDir)
+	}
+	cwd, _ := os.Getwd()
+	return cwd
+}
+
+func sanitizePathPart(s string) string {
+	r := strings.NewReplacer("/", "-", "\\", "-", " ", "-", ":", "-", "\t", "-")
+	return r.Replace(strings.TrimSpace(s))
+}
+
 func flagValue(args []string, flag string) string {
 	for i, a := range args {
 		if a == flag && i+1 < len(args) {
@@ -436,7 +494,7 @@ func printHelp() {
 
 Commands:
   process              Learn how this project works (run this first)
-  start <slug>         *** USE THIS TO BEGIN WORK *** Claims, transitions to in-progress, shows next steps
+  start <slug>         *** USE THIS TO BEGIN WORK *** Starts approved backlog work, transitions to in-progress, shows next steps
   next --version <v>   Find work for a version (default: from project.yaml)
   next --design        Find ideas and in-design issues needing design
   context <slug>       Full context dump for an issue (alias: show)
@@ -452,6 +510,7 @@ Commands:
   search <query>       Search issues (supports regex, e.g. "foo|bar")
   update <slug>        Replace issue body (--body "content"), preserves frontmatter
   append <slug>        Append content to issue body (--body "## Section\ncontent")
+  retrospective <slug> Save workflow feedback under retros/ in the project
   stats                Project health overview
   report-bug <desc>    Report a bug in issue-cli itself
 
@@ -463,7 +522,7 @@ Global flags:
 First time? Run these:
   1. issue-cli process
   2. issue-cli next
-  3. issue-cli start <slug>
+  3. issue-cli start <slug>   # backlog work must already be approved for in progress
 `)
 }
 
@@ -490,7 +549,7 @@ Every issue follows this lifecycle:
   done           Shipped, tested, documented
 
 == Rules ==
-  - Always use 'start' to begin work (it claims AND transitions to in-progress)
+  - Always use 'start' to begin work once the issue is approved for in progress in the viewer
   - Do NOT use 'claim' to begin work — it only sets assignee without starting
   - Never skip statuses — follow the order strictly
   - Always update docs before marking done
@@ -504,18 +563,20 @@ Every issue follows this lifecycle:
   - If a command fails, fix the issue it describes, do not retry blindly
 
 == When you pick up an issue ==
-  1. issue-cli start <slug>          — claims it, moves to in-progress, shows next steps
-  2. Do the work, check off items
-  3. Add ## Test Plan section with ### Automated and ### Manual
-  4. issue-cli transition <slug> --to "testing"
-  5. Log test results: issue-cli comment <slug> --text "tests: ..."
-  6. issue-cli transition <slug> --to "documentation"
-  7. Update docs: issue-cli comment <slug> --text "docs: ..."
-  8. issue-cli done <slug>
+  1. If the issue is in backlog, confirm it is approved for in-progress in the viewer
+  2. issue-cli start <slug>          — starts the approved issue, claims it, and shows next steps
+  3. If 'start' says approval is missing, stop and ask the human to approve it in the viewer
+  4. Do the work, check off items
+  5. Add ## Test Plan section with ### Automated and ### Manual
+  6. issue-cli transition <slug> --to "testing"
+  7. Log test results: issue-cli comment <slug> --text "tests: ..."
+  8. issue-cli transition <slug> --to "documentation"
+  9. Update docs: issue-cli comment <slug> --text "docs: ..."
+  10. issue-cli done <slug>
 
 == Quick start ==
   issue-cli next --version 0.1    — find work for version 0.1
-  issue-cli start <slug>          — begin work (claims + starts in-progress)
+  issue-cli start <slug>          — begin approved backlog work (claims + starts in-progress)
   issue-cli done <slug>           — finish when complete
 
 Run 'issue-cli process <topic>' for details:
@@ -546,8 +607,10 @@ Run 'issue-cli process <topic>' for details:
   → idea                      Title only
   idea → in design            Body must have content
   in design → backlog         At least one [ ] checkbox (acceptance criteria)
+                               Must be human-approved in the issue viewer
                                Side-effect: assignee is cleared
-  backlog → in progress       Must have an assignee (use: issue-cli start)
+  backlog → in progress       Must be human-approved in the issue viewer
+                               Must have an assignee (use: issue-cli start)
   in progress → testing       Section checkboxes must be checked (e.g. ## Implementation)
   testing → human-testing     Must have ## Test Plan with ### Automated and ### Manual
                                Must have a test results comment
@@ -794,40 +857,27 @@ func runStart(proj *tracker.Project, slug, assignee string) {
 		assignee = agentNameForSlug(slug)
 	}
 
-	fmt.Printf("== Starting work on: %s ==\n", issue.Title)
-	fmt.Printf("Status: %s\n", issue.Status)
+	started, err := wf.StartIssueOnce(issue.FilePath, slug, assignee)
+	if err != nil {
+		fatal("%v", err)
+	}
+	issue = started.Issue
 
-	// Auto-claim if not claimed
-	if issue.Assignee == "" {
-		a := assignee
-		err := tracker.UpdateIssueFrontmatter(issue.FilePath, tracker.IssueUpdate{Assignee: &a})
-		if err != nil {
-			fatal("Failed to claim: %v", err)
-		}
-		issue.Assignee = assignee
+	fmt.Printf("== Starting work on: %s ==\n", issue.Title)
+	fmt.Printf("Status: backlog\n")
+
+	if started.Claimed {
 		fmt.Printf("✓ Claimed (assignee: %s)\n", assignee)
-		fmt.Printf("file: %s\n", issue.FilePath)
 	} else {
 		fmt.Printf("Already claimed by: %s\n", issue.Assignee)
 	}
 
-	// Auto-transition to in progress if in backlog
-	if issue.Status == "backlog" {
-		if err := wf.ValidateTransition(issue, "backlog", "in progress", nil); err != nil {
-			fatal("Failed to transition: %v", err)
-		}
-		result := wf.ApplyTransition(issue, "backlog", "in progress")
-		if err := tracker.UpdateIssueFrontmatter(issue.FilePath, result.Update); err != nil {
-			fatal("Failed to transition: %v", err)
-		}
-		fmt.Println("✓ Status → in progress")
-		if result.BodyAppended {
-			fmt.Println("✓ Workflow content appended to issue body")
-		}
-		if result.ClearedApproval {
-			fmt.Println("✓ Approval consumed")
-		}
-		issue.Status = "in progress"
+	fmt.Println("✓ Status → in progress")
+	if started.Result.BodyAppended {
+		fmt.Println("✓ Workflow content appended to issue body")
+	}
+	if started.Result.ClearedApproval {
+		fmt.Println("✓ Approval consumed")
 	}
 
 	fmt.Printf("file: %s\n", issue.FilePath)
@@ -836,11 +886,28 @@ func runStart(proj *tracker.Project, slug, assignee string) {
 	printWorkflowNextSteps(wf, issue)
 }
 
+func startPreflight(wf *tracker.WorkflowConfig, issue *tracker.Issue, next string) error {
+	if issue.Status != "backlog" || next == "" {
+		return nil
+	}
+	if approvalStatus := wf.RequiredHumanApproval(issue.Status, next); approvalStatus != "" && !strings.EqualFold(issue.HumanApproval, approvalStatus) {
+		return fmt.Errorf("Cannot start %s from %q — it is not human-approved for %q.\n\nApprove %q in the issue viewer first, then rerun:\n  issue-cli start %s",
+			issue.Slug, issue.Status, approvalStatus, approvalStatus, issue.Slug)
+	}
+	return nil
+}
+
 func printWorkflowNextSteps(wf *tracker.WorkflowConfig, issue *tracker.Issue) {
 	total, checked := tracker.CountCheckboxes(issue.BodyRaw)
 	if total > 0 {
 		fmt.Printf("== Checklist (%d/%d) ==\n", checked, total)
 		printCheckboxes(issue.BodyRaw)
+		fmt.Println()
+	}
+
+	if prompt := wf.StatusPrompt(issue.Status); prompt != "" {
+		fmt.Println("== Current Status Guidance ==")
+		fmt.Printf("- %s\n", prompt)
 		fmt.Println()
 	}
 
@@ -860,10 +927,10 @@ func printWorkflowNextSteps(wf *tracker.WorkflowConfig, issue *tracker.Issue) {
 	if next != "" {
 		fmt.Println("== Next ==")
 		fmt.Printf("  issue-cli transition %s --to \"%s\"\n", issue.Slug, next)
-		prompts := wf.TransitionPrompts(issue.Status, next)
+		prompts := wf.EntryPrompts(issue.Status, next)
 		if len(prompts) > 0 {
 			fmt.Println()
-			fmt.Println("== Transition Guidance ==")
+			fmt.Println("== Entry Guidance ==")
 			for _, prompt := range prompts {
 				fmt.Printf("- %s\n", prompt)
 			}
@@ -1024,42 +1091,133 @@ func runTransition(proj *tracker.Project, slug, to string) {
 	wf := proj.LoadWorkflowForIssue(issue)
 	to = strings.ToLower(to)
 
-	if !wf.IsValidTransition(issue.Status, to) {
-		next := wf.NextStatus(issue.Status)
-		if next != "" {
-			fatal("Cannot transition from \"%s\" to \"%s\" — must go to \"%s\" next.\n\n  issue-cli transition %s --to \"%s\"",
-				issue.Status, to, next, slug, next)
-		}
-		fatal("Cannot transition from \"%s\" to \"%s\"", issue.Status, to)
-	}
-
-	// Validate requirements for this transition
-	comments, _ := tracker.LoadComments(issue.FilePath)
-	if err := wf.ValidateTransition(issue, issue.Status, to, comments); err != nil {
-		fatal("Cannot transition to \"%s\" — %s", to, err)
-	}
-
-	result := wf.ApplyTransition(issue, issue.Status, to)
-	if err := tracker.UpdateIssueFrontmatter(issue.FilePath, result.Update); err != nil {
+	from, result, err := wf.ApplyTransitionToFile(issue.FilePath, to)
+	if err != nil {
 		fatal("Failed to transition: %v", err)
 	}
 
-	fmt.Printf("✓ %s → %s\n", issue.Status, to)
-	fmt.Printf("file: %s\n", issue.FilePath)
-	if result.Update.Assignee != nil && *result.Update.Assignee == "" {
-		fmt.Println("✓ Assignee cleared (side-effect)")
+	issue, _ = findIssue(proj, slug)
+	output := buildTransitionOutput(wf, issue, from, to, result)
+	printTransitionResult(output)
+}
+
+func buildTransitionOutput(wf *tracker.WorkflowConfig, issue *tracker.Issue, from, to string, result tracker.TransitionResult) transitionOutput {
+	next := wf.NextStatus(issue.Status)
+	guidance := []string{}
+	if prompt := strings.TrimSpace(wf.StatusPrompt(issue.Status)); prompt != "" {
+		guidance = append(guidance, prompt)
+	}
+	guidance = append(guidance, result.InjectedPrompts...)
+	guidance = append(guidance, wf.EntryPrompts(issue.Status, next)...)
+
+	return transitionOutput{
+		From:            from,
+		To:              to,
+		Status:          issue.Status,
+		Slug:            issue.Slug,
+		File:            issue.FilePath,
+		SideEffects:     transitionSideEffects(result),
+		Checklist:       collectChecklist(issue.BodyRaw),
+		BodyChanged:     result.BodyChanged,
+		CommentsChanged: false,
+		NextStatus:      next,
+		Guidance:        guidance,
+	}
+}
+
+func transitionSideEffects(result tracker.TransitionResult) []string {
+	var effects []string
+	if result.Update.Assignee != nil {
+		if *result.Update.Assignee == "" {
+			effects = append(effects, "assignee cleared")
+		} else {
+			effects = append(effects, fmt.Sprintf("assignee set to %q", *result.Update.Assignee))
+		}
 	}
 	if result.ClearedApproval {
-		fmt.Println("✓ Approval consumed")
+		effects = append(effects, "approval consumed")
 	}
 	if result.BodyAppended {
-		fmt.Println("✓ Workflow content appended to issue body")
+		effects = append(effects, "workflow content appended to issue body")
+	} else if result.BodyChanged {
+		effects = append(effects, "issue body updated")
+	}
+	if len(result.InjectedPrompts) > 0 {
+		effects = append(effects, fmt.Sprintf("%d entry guidance prompt(s) injected", len(result.InjectedPrompts)))
+	}
+	return effects
+}
+
+func collectChecklist(body string) []transitionChecklistItem {
+	re := regexp.MustCompile(`^\s*-\s*\[([ xX])\]\s*(.*)$`)
+	var items []transitionChecklistItem
+	for _, line := range strings.Split(body, "\n") {
+		m := re.FindStringSubmatch(line)
+		if len(m) == 3 {
+			items = append(items, transitionChecklistItem{
+				Text:    strings.TrimSpace(m[2]),
+				Checked: strings.EqualFold(m[1], "x"),
+			})
+		}
+	}
+	return items
+}
+
+func printTransitionResult(output transitionOutput) {
+	if jsonOutput {
+		outputJSON(output)
+		return
+	}
+
+	fmt.Printf("✓ %s → %s\n", output.From, output.To)
+	fmt.Printf("file: %s\n", output.File)
+	fmt.Printf("Status: %s\n", output.Status)
+	for _, effect := range output.SideEffects {
+		fmt.Printf("✓ %s\n", capitalize(effect))
 	}
 	fmt.Println()
 
-	// Show next steps for the new status
-	issue.Status = to
-	printWorkflowNextSteps(wf, issue)
+	printWorkflowNextStepsFromData(output.Checklist, output.Guidance, output.NextStatus, output.Slug)
+}
+
+func printWorkflowNextStepsFromData(checklist []transitionChecklistItem, guidance []string, nextStatus, slug string) {
+	if len(checklist) > 0 {
+		checked := 0
+		for _, item := range checklist {
+			if item.Checked {
+				checked++
+			}
+		}
+		fmt.Printf("== Checklist (%d/%d) ==\n", checked, len(checklist))
+		for _, item := range checklist {
+			mark := " "
+			if item.Checked {
+				mark = "x"
+			}
+			fmt.Printf("- [%s] %s\n", mark, item.Text)
+		}
+		fmt.Println()
+	}
+
+	if len(guidance) > 0 {
+		fmt.Println("== Guidance ==")
+		for _, prompt := range guidance {
+			fmt.Printf("- %s\n", prompt)
+		}
+		fmt.Println()
+	}
+
+	if nextStatus != "" {
+		fmt.Println("== Next ==")
+		fmt.Printf("  issue-cli transition %s --to \"%s\"\n", slug, nextStatus)
+	}
+}
+
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 func runClaim(proj *tracker.Project, slug, assignee string) {
@@ -1097,86 +1255,38 @@ func runUnclaim(proj *tracker.Project, slug string) {
 func runUpdate(proj *tracker.Project, slug string, args []string) {
 	issue, _ := findIssue(proj, slug)
 	update := tracker.IssueUpdate{}
+	changed := false
 
 	b := flagValue(args, "--body")
-	if b == "" {
+	if b != "" {
+		update.Body = &b
+		changed = true
+	}
+
+	if !changed {
 		fatal("update requires --body\n\nExample:\n  issue-cli update %s --body \"new body content\"", slug)
 	}
 
-	update.Body = &b
 	if err := tracker.UpdateIssueFrontmatter(issue.FilePath, update); err != nil {
 		fatal("Failed to update: %v", err)
 	}
 
-	fmt.Printf("✓ Updated body: %s\n", issue.Slug)
+	fmt.Printf("✓ Updated: %s\n", issue.Slug)
 	fmt.Printf("file: %s\n", issue.FilePath)
 }
 
 func runDone(proj *tracker.Project, slug string) {
 	issue, _ := findIssue(proj, slug)
 	wf := proj.LoadWorkflowForIssue(issue)
-	comments, _ := tracker.LoadComments(issue.FilePath)
+	issue, err := wf.MarkIssueDoneOnce(issue.FilePath, slug)
+	if err != nil {
+		fatal("%v", err)
+	}
 
 	fmt.Println("== Validation ==")
+	fmt.Println("✓ done: all checks passed")
 
-	// Validate all remaining statuses up to "done"
-	ok := true
-	statusOrder := wf.GetStatusOrder()
-	currentIdx := wf.GetStatusIndex(issue.Status)
-	doneIdx := wf.GetStatusIndex("done")
-
-	if doneIdx == -1 {
-		fatal("No \"done\" status defined in workflow")
-	}
-
-	if currentIdx < doneIdx-1 {
-		expected := statusOrder[doneIdx-1]
-		fatal("Cannot mark as done from \"%s\" — issue must be in \"%s\" first.\n\n  issue-cli transition %s --to \"%s\"",
-			issue.Status, expected, slug, wf.NextStatus(issue.Status))
-	}
-
-	// Check all validations from current+1 through done
-	for i := currentIdx + 1; i <= doneIdx; i++ {
-		st := statusOrder[i]
-		prev := issue.Status
-		if i > 0 {
-			prev = statusOrder[i-1]
-		}
-		if err := wf.ValidateTransition(issue, prev, st, comments); err != nil {
-			fmt.Printf("✗ %s: %s\n", st, err)
-			ok = false
-		} else {
-			fmt.Printf("✓ %s: all checks passed\n", st)
-		}
-	}
-
-	if !ok {
-		fmt.Println("\nCannot mark as done. Fix the issues above first.")
-		os.Exit(1)
-	}
-
-	// Transition through remaining statuses, appending templates along the way
-	status := issue.Status
-	for i := currentIdx + 1; i <= doneIdx; i++ {
-		next := statusOrder[i]
-		s := next
-		update := tracker.IssueUpdate{Status: &s}
-
-		newBody, appended := wf.AppendTemplate(issue.BodyRaw, next)
-		if appended {
-			update.Body = &newBody
-			issue.BodyRaw = newBody
-		}
-
-		tracker.UpdateIssueFrontmatter(issue.FilePath, update)
-		status = next
-	}
-
-	// Auto-unclaim
-	empty := ""
-	tracker.UpdateIssueFrontmatter(issue.FilePath, tracker.IssueUpdate{Assignee: &empty})
-
-	fmt.Printf("\n✓ Status → %s\n", status)
+	fmt.Printf("\n✓ Status → %s\n", issue.Status)
 	fmt.Println("✓ Assignee cleared")
 	fmt.Printf("file: %s\n", issue.FilePath)
 }
@@ -1209,17 +1319,18 @@ func runChecklist(proj *tracker.Project, slug string) {
 func runCheck(proj *tracker.Project, slug, query string) {
 	issue, _ := findIssue(proj, slug)
 
-	newBody, found := tracker.CheckCheckbox(issue.BodyRaw, query)
+	newBody, found, err := tracker.UpdateIssueBody(issue.FilePath, func(body string) (string, bool, error) {
+		updated, ok := tracker.CheckCheckbox(body, query)
+		return updated, ok, nil
+	})
+	if err != nil {
+		fatal("Failed to update: %v", err)
+	}
 	if !found {
 		fmt.Printf("No unchecked item matching \"%s\"\n\n", query)
 		fmt.Println("Unchecked items:")
-		printCheckboxes(issue.BodyRaw)
+		printCheckboxes(newBody)
 		os.Exit(1)
-	}
-
-	err := tracker.UpdateIssueFrontmatter(issue.FilePath, tracker.IssueUpdate{Body: &newBody})
-	if err != nil {
-		fatal("Failed to update: %v", err)
 	}
 
 	total, checked := tracker.CountCheckboxes(newBody)
@@ -1328,14 +1439,47 @@ func runSearch(proj *tracker.Project, query string) {
 func runAppend(proj *tracker.Project, slug, text string) {
 	issue, _ := findIssue(proj, slug)
 
-	newBody := issue.BodyRaw + "\n" + text + "\n"
-	update := tracker.IssueUpdate{Body: &newBody}
-
-	if err := tracker.UpdateIssueFrontmatter(issue.FilePath, update); err != nil {
+	_, _, err := tracker.UpdateIssueBody(issue.FilePath, func(body string) (string, bool, error) {
+		body = strings.TrimRight(body, "\n")
+		if body == "" {
+			return text, true, nil
+		}
+		return body + "\n" + text, true, nil
+	})
+	if err != nil {
 		fatal("Failed to append: %v", err)
 	}
 
 	fmt.Printf("✓ Appended to %s\n", issue.Slug)
+}
+
+func runRetrospective(proj *tracker.Project, slug, text string) {
+	issue, _ := findIssue(proj, slug)
+
+	retroDir := filepath.Join(projectRoot(proj), "retros")
+	if err := os.MkdirAll(retroDir, 0755); err != nil {
+		fatal("Failed to create retrospective directory: %v", err)
+	}
+
+	body := strings.TrimSpace(text)
+	report := fmt.Sprintf(`# Workflow Retrospective
+
+Issue: %s
+Title: %s
+Status: %s
+System: %s
+Date: %s
+
+%s
+`, issue.Slug, issue.Title, issue.Status, issue.System, time.Now().Format(time.RFC3339), body)
+
+	name := fmt.Sprintf("%s-%s.md", time.Now().UTC().Format("20060102-150405"), sanitizePathPart(issue.Slug))
+	path := filepath.Join(retroDir, name)
+	if err := os.WriteFile(path, []byte(report), 0644); err != nil {
+		fatal("Failed to save retrospective: %v", err)
+	}
+	fmt.Printf("✓ Retrospective saved for %s\n", issue.Slug)
+	fmt.Printf("file: %s\n", path)
 }
 
 func runReportBug(description string) {
@@ -1344,6 +1488,9 @@ func runReportBug(description string) {
 		"description": description,
 		"tool":        "issue-cli",
 	}
+	if slug := os.Getenv("ISSUE_VIEWER_ISSUE_SLUG"); slug != "" {
+		entry["issue_slug"] = slug
+	}
 
 	line, err := json.Marshal(entry)
 	if err != nil {
@@ -1351,17 +1498,17 @@ func runReportBug(description string) {
 	}
 	line = append(line, '\n')
 
-	// Write to agent session log dir if available
-	var logFile string
-	if cliLog := os.Getenv("ISSUE_CLI_LOG"); cliLog != "" {
-		logFile = filepath.Join(filepath.Dir(cliLog), "bugs.log")
-	} else {
-		logDir := filepath.Join(os.TempDir(), "issue-cli-logs")
-		os.MkdirAll(logDir, 0755)
-		logFile = filepath.Join(logDir, "bugs.log")
+	serverRoot := os.Getenv("ISSUE_VIEWER_SERVER_PWD")
+	if serverRoot == "" {
+		serverRoot, _ = os.Getwd()
 	}
+	logDir := filepath.Join(serverRoot, "bugs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		fatal("failed to create bug directory: %v", err)
+	}
+	logFile := filepath.Join(logDir, fmt.Sprintf("%s-issue-cli-bug.json", time.Now().UTC().Format("20060102-150405")))
 
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		fatal("failed to write bug report: %v", err)
 	}
@@ -1392,9 +1539,9 @@ func runStats(proj *tracker.Project) {
 
 	if jsonOutput {
 		outputJSON(map[string]interface{}{
-			"total":      len(issues),
-			"by_status":  byStatus,
-			"by_system":  bySystem,
+			"total":       len(issues),
+			"by_status":   byStatus,
+			"by_system":   bySystem,
 			"by_assignee": byAssignee,
 		})
 		return

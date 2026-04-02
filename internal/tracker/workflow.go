@@ -3,7 +3,9 @@ package tracker
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -11,6 +13,7 @@ import (
 type WorkflowStatus struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
+	Prompt      string   `yaml:"prompt,omitempty"`
 	Template    string   `yaml:"template"`
 	Validation  []string `yaml:"validation"`
 	SideEffects []string `yaml:"side_effects"`
@@ -39,17 +42,35 @@ type WorkflowOverlay struct {
 }
 
 type WorkflowConfig struct {
-	Statuses    []WorkflowStatus            `yaml:"statuses"`
-	Transitions []WorkflowTransition        `yaml:"transitions"`
-	Systems     map[string]WorkflowOverlay  `yaml:"systems"`
+	Statuses    []WorkflowStatus           `yaml:"statuses"`
+	Transitions []WorkflowTransition       `yaml:"transitions"`
+	Systems     map[string]WorkflowOverlay `yaml:"systems"`
 }
 
 type TransitionResult struct {
-	Update            IssueUpdate
-	BodyChanged       bool
-	BodyAppended      bool
-	ClearedApproval   bool
-	InjectedPrompts   []string
+	Update          IssueUpdate `json:"update"`
+	BodyChanged     bool        `json:"body_changed"`
+	BodyAppended    bool        `json:"body_appended"`
+	ClearedApproval bool        `json:"cleared_approval"`
+	InjectedPrompts []string    `json:"injected_prompts"`
+}
+
+type TransitionPreviewStep struct {
+	ActionType string         `json:"action_type"`
+	Action     WorkflowAction `json:"action"`
+	Outcome    string         `json:"outcome"`
+	Summary    string         `json:"summary"`
+	Message    string         `json:"message,omitempty"`
+}
+
+type TransitionPreview struct {
+	From            string                  `json:"from"`
+	To              string                  `json:"to"`
+	System          string                  `json:"system,omitempty"`
+	Allowed         bool                    `json:"allowed"`
+	ValidationError string                  `json:"validation_error,omitempty"`
+	Steps           []TransitionPreviewStep `json:"steps"`
+	Result          TransitionResult        `json:"result"`
 }
 
 func stringPtr(s string) *string {
@@ -77,30 +98,37 @@ func DefaultWorkflow() *WorkflowConfig {
 			{
 				Name:        "idea",
 				Description: "Raw idea, needs exploration",
+				Prompt:      "Clarify the issue with the human before moving into structured design.\nAsk focused questions to remove ambiguity around goals, scope, and success criteria.",
 			},
 			{
 				Name:        "in design",
 				Description: "Being designed and specced out",
+				Prompt:      "Review the relevant context before proposing changes.\nTurn the problem into explicit checklists, assumptions, and open questions.\nWhen the design is complete, stop and ask for backlog approval in the issue viewer before attempting the transition.",
 			},
 			{
 				Name:        "backlog",
 				Description: "Ready to work on",
+				Prompt:      "This is a handoff state.\nDo not run `issue-cli start` until a human approves `in progress` in the issue viewer.",
 			},
 			{
 				Name:        "in progress",
 				Description: "Actively being implemented",
+				Prompt:      "Implement the accepted design and keep the issue body, implementation checklist, and test plan accurate as work progresses.",
 			},
 			{
 				Name:        "testing",
 				Description: "Under verification",
+				Prompt:      "Build or update the relevant automated coverage, record concrete test evidence, and surface any remaining manual checks clearly.",
 			},
 			{
 				Name:        "human-testing",
 				Description: "Manual verification by humans",
+				Prompt:      "Stop here and wait for human verification.\nMake sure the manual checks are explicit, minimal, and reproducible.",
 			},
 			{
 				Name:        "documentation",
 				Description: "Being documented",
+				Prompt:      "Update the relevant docs for the change and record the documentation work clearly.",
 			},
 			{
 				Name:        "done",
@@ -130,6 +158,7 @@ func DefaultWorkflow() *WorkflowConfig {
 				From: "backlog",
 				To:   "in progress",
 				Actions: []WorkflowAction{
+					{Type: "require_human_approval", Status: "in progress"},
 					{Type: "validate", Rule: "has_assignee"},
 					{Type: "append_section", Title: "Implementation", Body: "- [ ] Code changes complete\n- [ ] Tests added or updated"},
 					{Type: "append_section", Title: "Test Plan", Body: "### Automated\n- [ ] Automated verification recorded\n\n### Manual\n- [ ] Manual verification steps listed if needed"},
@@ -141,8 +170,8 @@ func DefaultWorkflow() *WorkflowConfig {
 				To:   "testing",
 				Actions: []WorkflowAction{
 					{Type: "validate", Rule: "all_checkboxes_checked"},
-					{Type: "append_section", Title: "Testing", Body: "- [ ] Automated tests passing\n- [ ] Test results logged with `issue-cli comment <slug> --text \"tests: ...\"`"},
-					{Type: "inject_prompt", Prompt: "Verify the implementation, run the relevant tests, and record the results in a `tests:` comment before continuing."},
+					{Type: "append_section", Title: "Testing", Body: "- [ ] Relevant tests for changed code passing\n- [ ] Known unrelated failures documented if full suite is red\n- [ ] Test results logged with `issue-cli comment <slug> --text \"tests: ...\"`"},
+					{Type: "inject_prompt", Prompt: "Verify the implementation, run the relevant tests for the changed code, and record the results in a `tests:` comment before continuing. If unrelated failures block the full suite, document them explicitly."},
 				},
 			},
 			{
@@ -171,7 +200,58 @@ func DefaultWorkflow() *WorkflowConfig {
 				},
 			},
 		},
+		Systems: map[string]WorkflowOverlay{
+			"Combat": {
+				Transitions: []WorkflowTransition{
+					{
+						From: "backlog",
+						To:   "in progress",
+						Actions: []WorkflowAction{
+							{Type: "inject_prompt", Prompt: "Check combat edge cases, balance implications, and regression coverage before closing implementation."},
+						},
+					},
+				},
+			},
+			"UI": {
+				Statuses: []WorkflowStatus{
+					{
+						Name:   "in design",
+						Prompt: "Review the relevant context before proposing changes.\nTurn the problem into explicit checklists, assumptions, and open questions.\nFor UI work that launches local tools or editors, state whether to reuse existing tmux/alacritty patterns, whether handlers may block on local processes, and what feedback the user sees after launch.\nWhen the design is complete, stop and ask for backlog approval in the issue viewer before attempting the transition.",
+					},
+				},
+			},
+			"API": {
+				Statuses: []WorkflowStatus{
+					{
+						Name:   "in design",
+						Prompt: "Review the relevant context before proposing changes.\nTurn the problem into explicit checklists, assumptions, and open questions.\nFor API changes that affect UI-visible state, state the source of truth, whether server-side polling plus `/hash` is the expected refresh path, and whether manual browser verification is required before human-testing.\nWhen the design is complete, stop and ask for backlog approval in the issue viewer before attempting the transition.",
+					},
+				},
+			},
+			"CLI": {
+				Statuses: []WorkflowStatus{
+					{
+						Name:   "in design",
+						Prompt: "Review the relevant context before proposing changes.\nTurn the problem into explicit checklists, assumptions, and open questions.\nDocument the output contract early: whether text is human-facing or agent-facing, whether script compatibility matters, and whether `--json` or other machine-readable output is in scope for this issue.\nWhen the design is complete, stop and ask for backlog approval in the issue viewer before attempting the transition.",
+					},
+				},
+			},
+		},
 	}
+}
+
+func (w *WorkflowConfig) RequiredHumanApproval(fromStatus, toStatus string) string {
+	for _, action := range w.transitionActions(fromStatus, toStatus) {
+		if action.Type != "require_human_approval" {
+			continue
+		}
+		status := strings.TrimSpace(action.Status)
+		if status == "" {
+			return toStatus
+		}
+		return status
+	}
+	return ""
 }
 
 func (w *WorkflowConfig) GetStatusOrder() []string {
@@ -290,6 +370,14 @@ func (w *WorkflowConfig) TemplateForStatus(name string) string {
 	return strings.TrimRight(s.Template, "\n")
 }
 
+func (w *WorkflowConfig) StatusPrompt(name string) string {
+	s := w.GetStatus(name)
+	if s == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.Prompt)
+}
+
 func (w *WorkflowConfig) transitionActions(from, to string) []WorkflowAction {
 	if t := w.GetTransition(from, to); t != nil {
 		return append([]WorkflowAction(nil), t.Actions...)
@@ -302,10 +390,14 @@ func (w *WorkflowConfig) transitionActions(from, to string) []WorkflowAction {
 
 	var actions []WorkflowAction
 	for _, rule := range s.Validation {
-		if strings.HasPrefix(rule, "approved_for: ") {
+		if strings.HasPrefix(rule, "approved_for: ") || strings.HasPrefix(rule, "human_approval: ") {
+			status := strings.TrimSpace(strings.TrimPrefix(rule, "approved_for: "))
+			if strings.HasPrefix(rule, "human_approval: ") {
+				status = strings.TrimSpace(strings.TrimPrefix(rule, "human_approval: "))
+			}
 			actions = append(actions, WorkflowAction{
 				Type:   "require_human_approval",
-				Status: strings.TrimSpace(strings.TrimPrefix(rule, "approved_for: ")),
+				Status: status,
 			})
 			continue
 		}
@@ -327,6 +419,15 @@ func (w *WorkflowConfig) TransitionPrompts(from, to string) []string {
 			prompts = append(prompts, strings.TrimSpace(action.Prompt))
 		}
 	}
+	return prompts
+}
+
+func (w *WorkflowConfig) EntryPrompts(from, to string) []string {
+	var prompts []string
+	if statusPrompt := w.StatusPrompt(to); statusPrompt != "" {
+		prompts = append(prompts, statusPrompt)
+	}
+	prompts = append(prompts, w.TransitionPrompts(from, to)...)
 	return prompts
 }
 
@@ -370,15 +471,6 @@ func appendToSection(body, title, content string) (string, bool) {
 		return body, false
 	}
 
-	if !strings.Contains(body, heading) {
-		body = strings.TrimRight(body, "\n")
-		if body != "" {
-			body += "\n\n"
-		}
-		body += heading + "\n" + content + "\n"
-		return body, true
-	}
-
 	lines := strings.Split(body, "\n")
 	headingLine := strings.TrimSpace(heading)
 	start := -1
@@ -388,31 +480,16 @@ func appendToSection(body, title, content string) (string, bool) {
 			break
 		}
 	}
-	if start == -1 {
+	if start != -1 {
 		return body, false
 	}
 
-	end := len(lines)
-	for i := start + 1; i < len(lines); i++ {
-		if strings.HasPrefix(strings.TrimSpace(lines[i]), "## ") {
-			end = i
-			break
-		}
+	body = strings.TrimRight(body, "\n")
+	if body != "" {
+		body += "\n\n"
 	}
-
-	section := strings.Join(lines[start:end], "\n")
-	if strings.Contains(section, content) {
-		return body, false
-	}
-
-	insert := []string{content}
-	if end > start+1 && strings.TrimSpace(lines[end-1]) != "" {
-		insert = append([]string{""}, insert...)
-	}
-	newLines := append([]string{}, lines[:end]...)
-	newLines = append(newLines, insert...)
-	newLines = append(newLines, lines[end:]...)
-	return strings.Join(newLines, "\n"), true
+	body += heading + "\n" + content + "\n"
+	return body, true
 }
 
 // ValidateTransition checks whether an issue meets all validation rules for a transition.
@@ -433,8 +510,8 @@ func (w *WorkflowConfig) ValidateTransition(issue *Issue, fromStatus, toStatus s
 			if status == "" {
 				status = toStatus
 			}
-			if !strings.EqualFold(issue.ApprovedFor, status) {
-				return fmt.Errorf("issue not approved for %q — a human must approve it first:\n\n  issue-cli update %s --approved-for %s", status, issue.Slug, status)
+			if !strings.EqualFold(issue.HumanApproval, status) {
+				return fmt.Errorf("issue is not human-approved for %q — a human must approve it in the issue viewer first", status)
 			}
 		}
 	}
@@ -448,6 +525,138 @@ func (w *WorkflowConfig) Validate(issue *Issue, toStatus string, comments []Comm
 		fromStatus = w.Statuses[idx-1].Name
 	}
 	return w.ValidateTransition(issue, fromStatus, toStatus, comments)
+}
+
+func (w *WorkflowConfig) PreviewTransition(issue *Issue, fromStatus, toStatus, system string, comments []Comment) TransitionPreview {
+	preview := TransitionPreview{
+		From:    fromStatus,
+		To:      toStatus,
+		System:  strings.TrimSpace(system),
+		Allowed: true,
+	}
+
+	if w.GetStatus(toStatus) == nil {
+		preview.Allowed = false
+		preview.ValidationError = fmt.Sprintf("unknown status %q", toStatus)
+		return preview
+	}
+
+	working := *issue
+	actions := w.transitionActions(fromStatus, toStatus)
+	for _, action := range actions {
+		step := TransitionPreviewStep{
+			ActionType: action.Type,
+			Action:     action,
+			Outcome:    "info",
+			Summary:    action.Type,
+		}
+
+		switch action.Type {
+		case "validate":
+			step.Summary = validationSummary(action.Rule)
+			if err := w.checkRule(action.Rule, &working, comments); err != nil {
+				step.Outcome = "failed"
+				step.Message = err.Error()
+				preview.Allowed = false
+				preview.ValidationError = err.Error()
+				preview.Steps = append(preview.Steps, step)
+				return preview
+			}
+			step.Outcome = "passed"
+			step.Message = "Validation passed"
+		case "require_human_approval":
+			status := strings.TrimSpace(action.Status)
+			if status == "" {
+				status = toStatus
+			}
+			step.Summary = fmt.Sprintf("Require approval for %s", status)
+			if !strings.EqualFold(working.HumanApproval, status) {
+				step.Outcome = "failed"
+				step.Message = fmt.Sprintf("Issue is not human-approved for %q", status)
+				preview.Allowed = false
+				preview.ValidationError = fmt.Sprintf("issue is not human-approved for %q", status)
+				preview.Steps = append(preview.Steps, step)
+				return preview
+			}
+			step.Outcome = "passed"
+			step.Message = fmt.Sprintf("Issue human-approved for %q", status)
+		case "append_section":
+			step.Summary = fmt.Sprintf("Append section %s", action.Title)
+			newBody, changed := appendToSection(working.BodyRaw, action.Title, action.Body)
+			if changed {
+				working.BodyRaw = newBody
+				step.Outcome = "changed"
+				step.Message = "Section would be created"
+			} else {
+				step.Outcome = "skipped"
+				step.Message = "Section already exists or action is empty"
+			}
+		case "inject_prompt":
+			step.Summary = "Inject prompt"
+			if strings.TrimSpace(action.Prompt) == "" {
+				step.Outcome = "skipped"
+				step.Message = "Prompt is empty"
+			} else {
+				step.Outcome = "changed"
+				step.Message = strings.TrimSpace(action.Prompt)
+			}
+		case "set_fields":
+			step.Summary = fmt.Sprintf("Set field %s", action.Field)
+			step.Outcome = "changed"
+			if action.Value == "" {
+				step.Message = fmt.Sprintf("%s would be cleared", action.Field)
+			} else {
+				step.Message = fmt.Sprintf("%s would be set to %q", action.Field, action.Value)
+			}
+		default:
+			step.Message = "Action type preview not implemented"
+		}
+
+		preview.Steps = append(preview.Steps, step)
+	}
+
+	result := w.ApplyTransition(&working, fromStatus, toStatus)
+	preview.Result = result
+	return preview
+}
+
+func validationSummary(rule string) string {
+	ruleName := rule
+	arg := ""
+	if idx := strings.Index(rule, ": "); idx != -1 {
+		ruleName = rule[:idx]
+		arg = rule[idx+2:]
+	}
+
+	switch ruleName {
+	case "body_not_empty":
+		return "Validate issue body is not empty"
+	case "has_checkboxes":
+		return "Validate issue has checkboxes"
+	case "has_assignee":
+		return "Validate issue has assignee"
+	case "all_checkboxes_checked":
+		return "Validate all checkboxes are checked"
+	case "section_checkboxes_checked":
+		if arg == "" {
+			return "Validate section checkboxes are checked"
+		}
+		return fmt.Sprintf("Validate section %s checkboxes are checked", arg)
+	case "has_test_plan":
+		return "Validate test plan is present"
+	case "has_comment_prefix":
+		if arg == "" {
+			return "Validate required comment prefix exists"
+		}
+		return fmt.Sprintf("Validate comment starts with %s", arg)
+	case "approved_for", "human_approval":
+		if arg == "" {
+			return "Validate issue has human approval"
+		}
+		return fmt.Sprintf("Validate issue human-approved for %s", arg)
+	default:
+		return fmt.Sprintf("Validate %s", rule)
+	}
 }
 
 func (w *WorkflowConfig) checkRule(rule string, issue *Issue, comments []Comment) error {
@@ -503,12 +712,12 @@ func (w *WorkflowConfig) checkRule(rule string, issue *Issue, comments []Comment
 		if !HasCommentWithPrefix(comments, ruleArg) {
 			return fmt.Errorf("no comment starting with %q — add one:\n\n  issue-cli comment %s --text \"%s ...\"", ruleArg, issue.Slug, ruleArg)
 		}
-	case "approved_for":
+	case "approved_for", "human_approval":
 		if ruleArg == "" {
-			return fmt.Errorf("approved_for rule requires a status argument")
+			return fmt.Errorf("human_approval rule requires a status argument")
 		}
-		if !strings.EqualFold(issue.ApprovedFor, ruleArg) {
-			return fmt.Errorf("issue not approved for %q — a human must approve it first:\n\n  issue-cli update %s --approved-for %s", ruleArg, issue.Slug, ruleArg)
+		if !strings.EqualFold(issue.HumanApproval, ruleArg) {
+			return fmt.Errorf("issue is not human-approved for %q — a human must approve it in the issue viewer first", ruleArg)
 		}
 	default:
 		return fmt.Errorf("unknown validation rule: %s", ruleName)
@@ -541,8 +750,8 @@ func (w *WorkflowConfig) ApplyTransition(issue *Issue, fromStatus, toStatus stri
 			switch action.Field {
 			case "assignee":
 				result.Update.Assignee = stringPtr(action.Value)
-			case "approved_for":
-				result.Update.ApprovedFor = stringPtr(action.Value)
+			case "human_approval", "approved_for":
+				result.Update.HumanApproval = stringPtr(action.Value)
 			case "priority":
 				result.Update.Priority = stringPtr(action.Value)
 			case "status":
@@ -558,12 +767,231 @@ func (w *WorkflowConfig) ApplyTransition(issue *Issue, fromStatus, toStatus stri
 		result.BodyAppended = true
 	}
 
-	if issue.ApprovedFor != "" {
-		result.Update.ApprovedFor = stringPtr("")
+	if issue.HumanApproval != "" {
+		result.Update.HumanApproval = stringPtr("")
 		result.ClearedApproval = true
 	}
 
 	return result
+}
+
+func (w *WorkflowConfig) ApplyTransitionToFile(filePath, toStatus string) (string, TransitionResult, error) {
+	var fromStatus string
+	var result TransitionResult
+
+	err := withIssueLock(filePath, func() error {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", filePath, err)
+		}
+
+		issue, err := ParseIssue(filepath.Base(filePath), data)
+		if err != nil {
+			return err
+		}
+		issue.FilePath = filePath
+
+		rawBody, err := ParseFrontmatter(string(data), &Issue{})
+		if err != nil {
+			return fmt.Errorf("parsing current issue state for %s: %w", filePath, err)
+		}
+		_, comments := ParseComments(rawBody)
+
+		fromStatus = issue.Status
+		if !w.IsValidTransition(fromStatus, toStatus) {
+			next := w.NextStatus(fromStatus)
+			if next != "" {
+				return fmt.Errorf("cannot transition from %q to %q — must go to %q next", fromStatus, toStatus, next)
+			}
+			return fmt.Errorf("cannot transition from %q to %q", fromStatus, toStatus)
+		}
+		if err := w.ValidateTransition(issue, fromStatus, toStatus, comments); err != nil {
+			return err
+		}
+
+		result = w.ApplyTransition(issue, fromStatus, toStatus)
+		return updateIssueFrontmatterLocked(filePath, result.Update)
+	})
+
+	return fromStatus, result, err
+}
+
+type StartIssueResult struct {
+	Issue   *Issue
+	Result  TransitionResult
+	Claimed bool
+}
+
+func (w *WorkflowConfig) StartIssueOnce(filePath, slug, assignee string) (*StartIssueResult, error) {
+	var out *StartIssueResult
+
+	err := withIssueLock(filePath, func() error {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", filePath, err)
+		}
+
+		issue, err := ParseIssue(filepath.Base(filePath), data)
+		if err != nil {
+			return err
+		}
+		issue.FilePath = filePath
+		issue.Slug = slug
+
+		if issue.StartedAt != "" {
+			return fmt.Errorf("issue %s was already started at %s", slug, issue.StartedAt)
+		}
+
+		next := w.NextStatus(issue.Status)
+		if issue.Status != "backlog" || next != "in progress" {
+			return fmt.Errorf("issue %s cannot be started from status %q", slug, issue.Status)
+		}
+
+		rawBody, err := ParseFrontmatter(string(data), &Issue{})
+		if err != nil {
+			return fmt.Errorf("parsing current issue state for %s: %w", filePath, err)
+		}
+		_, comments := ParseComments(rawBody)
+
+		claimed := false
+		if issue.Assignee == "" {
+			issue.Assignee = assignee
+			claimed = true
+		}
+		if err := w.ValidateTransition(issue, "backlog", "in progress", comments); err != nil {
+			return err
+		}
+
+		result := w.ApplyTransition(issue, "backlog", "in progress")
+		if claimed && result.Update.Assignee == nil {
+			result.Update.Assignee = stringPtr(assignee)
+		}
+		startedAt := time.Now().UTC().Format(time.RFC3339)
+		result.Update.StartedAt = stringPtr(startedAt)
+
+		if err := updateIssueFrontmatterLocked(filePath, result.Update); err != nil {
+			return err
+		}
+
+		data, err = os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("reading updated %s: %w", filePath, err)
+		}
+		updatedIssue, err := ParseIssue(filepath.Base(filePath), data)
+		if err != nil {
+			return err
+		}
+		updatedIssue.FilePath = filePath
+		updatedIssue.Slug = slug
+
+		out = &StartIssueResult{
+			Issue:   updatedIssue,
+			Result:  result,
+			Claimed: claimed,
+		}
+		return nil
+	})
+
+	return out, err
+}
+
+func (w *WorkflowConfig) MarkIssueDoneOnce(filePath, slug string) (*Issue, error) {
+	var out *Issue
+
+	err := withIssueLock(filePath, func() error {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", filePath, err)
+		}
+
+		issue, err := ParseIssue(filepath.Base(filePath), data)
+		if err != nil {
+			return err
+		}
+		issue.FilePath = filePath
+		issue.Slug = slug
+
+		if issue.DoneAt != "" || issue.Status == "done" {
+			if issue.DoneAt != "" {
+				return fmt.Errorf("issue %s was already marked done at %s", slug, issue.DoneAt)
+			}
+			return fmt.Errorf("issue %s is already done", slug)
+		}
+
+		rawBody, err := ParseFrontmatter(string(data), &Issue{})
+		if err != nil {
+			return fmt.Errorf("parsing current issue state for %s: %w", filePath, err)
+		}
+		_, comments := ParseComments(rawBody)
+
+		statusOrder := w.GetStatusOrder()
+		currentIdx := w.GetStatusIndex(issue.Status)
+		doneIdx := w.GetStatusIndex("done")
+		if doneIdx == -1 {
+			return fmt.Errorf("no \"done\" status defined in workflow")
+		}
+		if currentIdx < doneIdx-1 {
+			expected := statusOrder[doneIdx-1]
+			return fmt.Errorf("cannot mark as done from %q — issue must be in %q first", issue.Status, expected)
+		}
+
+		combined := IssueUpdate{}
+		for i := currentIdx + 1; i <= doneIdx; i++ {
+			next := statusOrder[i]
+			prev := issue.Status
+			if err := w.ValidateTransition(issue, prev, next, comments); err != nil {
+				return err
+			}
+			result := w.ApplyTransition(issue, prev, next)
+			if result.Update.Status != nil {
+				combined.Status = result.Update.Status
+				issue.Status = *result.Update.Status
+			}
+			if result.Update.Body != nil {
+				combined.Body = result.Update.Body
+				issue.BodyRaw = *result.Update.Body
+			}
+			if result.Update.Assignee != nil {
+				combined.Assignee = result.Update.Assignee
+				issue.Assignee = *result.Update.Assignee
+			}
+			if result.Update.HumanApproval != nil {
+				combined.HumanApproval = result.Update.HumanApproval
+				issue.HumanApproval = *result.Update.HumanApproval
+			}
+			if result.Update.Priority != nil {
+				combined.Priority = result.Update.Priority
+				issue.Priority = *result.Update.Priority
+			}
+		}
+
+		empty := ""
+		doneAt := time.Now().UTC().Format(time.RFC3339)
+		combined.Assignee = &empty
+		combined.DoneAt = &doneAt
+		if combined.Status == nil {
+			combined.Status = stringPtr("done")
+		}
+
+		if err := updateIssueFrontmatterLocked(filePath, combined); err != nil {
+			return err
+		}
+
+		data, err = os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("reading updated %s: %w", filePath, err)
+		}
+		updatedIssue, err := ParseIssue(filepath.Base(filePath), data)
+		if err != nil {
+			return err
+		}
+		updatedIssue.FilePath = filePath
+		updatedIssue.Slug = slug
+		out = updatedIssue
+		return nil
+	})
+
+	return out, err
 }
 
 // Merge overlays custom workflow config onto this one.
@@ -579,6 +1007,9 @@ func (w *WorkflowConfig) Merge(custom *WorkflowConfig) {
 		}
 		if cs.Description != "" {
 			base.Description = cs.Description
+		}
+		if cs.Prompt != "" {
+			base.Prompt = cs.Prompt
 		}
 		if cs.Template != "" {
 			base.Template = cs.Template

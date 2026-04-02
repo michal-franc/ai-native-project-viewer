@@ -19,24 +19,19 @@ type Project struct {
 }
 
 // LoadWorkflow loads the project's workflow config.
-// Starts from DefaultWorkflow, then merges a custom file on top (if found).
-// Custom files can add validations, side_effects, templates — duplicates are skipped.
+// An explicit project workflow file is the source of truth. If no project workflow
+// file exists, it falls back to a local workflow.yaml, and finally to the built-in
+// default workflow.
 func (p *Project) LoadWorkflow() *WorkflowConfig {
-	base := DefaultWorkflow()
-
-	var custom *WorkflowConfig
 	if p.WorkflowFile != "" {
-		custom, _ = LoadWorkflow(p.WorkflowFile)
+		if custom, err := LoadWorkflow(p.WorkflowFile); err == nil && custom != nil {
+			return custom
+		}
 	}
-	if custom == nil {
-		custom, _ = LoadWorkflow("workflow.yaml")
+	if custom, err := LoadWorkflow("workflow.yaml"); err == nil && custom != nil {
+		return custom
 	}
-	if custom == nil {
-		return base
-	}
-
-	base.Merge(custom)
-	return base
+	return DefaultWorkflow()
 }
 
 func (p *Project) LoadWorkflowForSystem(system string) *WorkflowConfig {
