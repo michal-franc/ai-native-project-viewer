@@ -17,6 +17,7 @@
                 <h1>{{.ProjectName}}</h1>
             </div>
             <div class="theme-picker">
+                <div class="agent-activity-summary" id="project-active-bots" data-count="{{.ActiveBots}}">{{.ActiveBots}} active bot{{if ne .ActiveBots 1}}s{{end}}</div>
                 <button class="theme-btn" data-theme="dark" title="Dark"></button>
                 <button class="theme-btn" data-theme="dracula" title="Dracula"></button>
                 <button class="theme-btn" data-theme="light" title="Light"></button>
@@ -33,6 +34,7 @@
                 <div class="body-toolbar">
                     <button class="body-tab active" id="btn-preview" onclick="showPreview()">Preview</button>
                     <button class="body-tab" id="btn-edit" onclick="showEditor()">Edit</button>
+                    <button class="body-toolbar-action" onclick="editInNvim()">Edit in nvim</button>
                 </div>
                 <div class="detail-body" id="body-preview">
                     {{if .Issue.BodyHTML}}
@@ -58,6 +60,30 @@
                         </select>
                     </div>
                 </div>
+
+                <div class="sidebar-section" id="active-agent-section" {{if not .Issue.HasActiveAgent}}style="display:none"{{end}}>
+                    <h3>Active Agent</h3>
+                    <div class="active-session-list" id="active-session-list">
+                        {{range .Issue.ActiveSessions}}
+                        <div class="active-session-item">
+                            <div class="active-session-name">{{.Name}}</div>
+                            {{if .StartTime}}<div class="active-session-time">{{.StartTime}}</div>{{end}}
+                        </div>
+                        {{end}}
+                    </div>
+                </div>
+
+                {{if .NeedsApproval}}
+                <div class="sidebar-section">
+                    <h3>Human Approval</h3>
+                    <div class="sidebar-value">
+                        <button class="approve-btn {{if eq .Issue.HumanApproval .NeedsApproval}}approved{{end}}" id="approve-btn" onclick="toggleApproval('{{.NeedsApproval}}')">
+                            <span class="approve-check">{{if eq .Issue.HumanApproval .NeedsApproval}}&#10003;{{else}}&#9744;{{end}}</span>
+                            Human-approved for {{.NeedsApproval}}
+                        </button>
+                    </div>
+                </div>
+                {{end}}
 
                 <div class="sidebar-section">
                     <h3>Priority</h3>
@@ -227,6 +253,23 @@
         });
     }
 
+    function editInNvim() {
+        fetch(issueURL + '/edit-in-nvim', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        }).then(res => res.json().then(data => ({ ok: res.ok, data: data })))
+          .then(result => {
+            if (!result.ok) {
+                showToast(result.data.error || 'Failed to open nvim', true);
+                return;
+            }
+            showToast(result.data.message || 'Opened in nvim');
+          })
+          .catch(err => {
+            showToast('Failed to open nvim: ' + err.message, true);
+          });
+    }
+
     // --- Inline comments ---
     const commentsURL = issueURL + '/comments';
     let allComments = [];
@@ -392,10 +435,10 @@
         });
     }
 
-    function showToast(msg) {
+    function showToast(msg, isError) {
         const toast = document.getElementById('save-toast');
         toast.textContent = msg;
-        toast.className = 'save-toast show';
+        toast.className = 'save-toast show' + (isError ? ' error' : '');
         setTimeout(() => { toast.className = 'save-toast'; }, 1500);
     }
 
@@ -436,6 +479,25 @@
 
         textarea.value = result;
         saveUpdate({ body: result });
+    }
+
+    function toggleApproval(status) {
+        fetch(issueURL + '/approve', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: status })
+        }).then(res => res.json()).then(data => {
+            const btn = document.getElementById('approve-btn');
+            const check = btn.querySelector('.approve-check');
+            if (data.human_approval === status) {
+                btn.classList.add('approved');
+                check.innerHTML = '&#10003;';
+            } else {
+                btn.classList.remove('approved');
+                check.innerHTML = '&#9744;';
+            }
+            showToast(data.human_approval ? 'Human approval set' : 'Human approval removed');
+        });
     }
 
     function dispatchToAgent(agent) {

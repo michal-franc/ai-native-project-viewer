@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -98,6 +99,15 @@ func newTestServer(t *testing.T, projects []tracker.Project) *httptest.Server {
 		t.Fatal(err)
 	}
 	return httptest.NewServer(srv.Routes())
+}
+
+func withMockTmuxSessions(t *testing.T, sessions []AgentSession) {
+	t.Helper()
+	original := listTmuxSessions
+	listTmuxSessions = func() []AgentSession { return sessions }
+	t.Cleanup(func() {
+		listTmuxSessions = original
+	})
 }
 
 // --- handleProjectList ---
@@ -226,6 +236,34 @@ func TestHandleList_FiltersWork(t *testing.T) {
 	}
 }
 
+func TestHandleList_ShowsActiveBotSummaryAndIssueChip(t *testing.T) {
+	proj, _ := setupTestProject(t)
+	withMockTmuxSessions(t, []AgentSession{
+		{Name: "agent-bug-in-login", StartTime: "2026-04-02 21:57:59"},
+		{Name: "agent-unrelated-work", StartTime: "2026-04-02 21:58:59"},
+	})
+
+	ts := newTestServer(t, []tracker.Project{proj})
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/p/test-project/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	for _, want := range []string{"1 active bot", "1 agent active"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected list view to contain %q\n%s", want, html)
+		}
+	}
+}
+
 // --- handleBoard ---
 
 func TestHandleBoard_ReturnsBoardView(t *testing.T) {
@@ -277,6 +315,67 @@ func TestHandleBoard_Filters(t *testing.T) {
 	}
 }
 
+func TestHandleBoard_ShowsActiveBotSummaryAndIssueChip(t *testing.T) {
+	proj, _ := setupTestProject(t)
+	withMockTmuxSessions(t, []AgentSession{
+		{Name: "agent-bug-in-login", StartTime: "2026-04-02 21:57:59"},
+		{Name: "agent-unrelated-work", StartTime: "2026-04-02 21:58:59"},
+	})
+
+	ts := newTestServer(t, []tracker.Project{proj})
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/p/test-project/board")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	for _, want := range []string{"1 active bot", "1 agent active"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected board view to contain %q\n%s", want, html)
+		}
+	}
+}
+
+func TestBuildAgentPrompt_IncludesCurrentStatusGuidanceAndRetrospectiveTrigger(t *testing.T) {
+	issue := &tracker.Issue{
+		Slug:     "combat/fix-heat",
+		Title:    "Fix heat",
+		Status:   "testing",
+		System:   "Combat",
+		Priority: "high",
+		BodyRaw:  "Body text",
+	}
+	wf := &tracker.WorkflowConfig{
+		Statuses: []tracker.WorkflowStatus{
+			{Name: "testing", Prompt: "Build relevant automated coverage before handoff."},
+		},
+	}
+
+	prompt := buildAgentPrompt(issue, wf)
+
+	for _, want := range []string{
+		"## Current status guidance",
+		"Build relevant automated coverage before handoff.",
+		"issue-cli retrospective combat/fix-heat --body",
+		"retros/ in the project",
+		"Subsystem workflow for Combat:",
+		"Missing system-specific instructions:",
+		"issue-cli report-bug",
+		"bugs/ in the server root",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to contain %q\n\n%s", want, prompt)
+		}
+	}
+}
+
 // --- handleDetail ---
 
 func TestHandleDetail_ReturnsIssueDetail(t *testing.T) {
@@ -324,6 +423,115 @@ func TestHandleDetail_BackURLFromBoard(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestHandleDetail_ShowsActiveSessionDetails(t *testing.T) {
+	proj, _ := setupTestProject(t)
+	withMockTmuxSessions(t, []AgentSession{
+		{Name: "agent-bug-in-login", StartTime: "2026-04-02 21:57:59"},
+		{Name: "agent-unrelated-work", StartTime: "2026-04-02 21:58:59"},
+	})
+
+	ts := newTestServer(t, []tracker.Project{proj})
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/p/test-project/issue/bug-in-login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(body)
+	for _, want := range []string{"1 active bot", "Active Agent", "agent-bug-in-login", "2026-04-02 21:57:59"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected detail view to contain %q\n%s", want, html)
+		}
+	}
+}
+
+func TestHandleIssuesJSON_IncludesActiveSessions(t *testing.T) {
+	proj, _ := setupTestProject(t)
+	withMockTmuxSessions(t, []AgentSession{{Name: "agent-bug-in-login", StartTime: "2026-04-02 21:57:59"}})
+
+	ts := newTestServer(t, []tracker.Project{proj})
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/p/test-project/issues.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var issues []issueJSON
+	if err := json.NewDecoder(resp.Body).Decode(&issues); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, issue := range issues {
+		if issue.Slug == "bug-in-login" {
+			if !issue.HasActiveAgent {
+				t.Fatal("expected bug-in-login to be marked active")
+			}
+			if len(issue.ActiveSessions) != 1 || issue.ActiveSessions[0].Name != "agent-bug-in-login" {
+				t.Fatalf("unexpected active sessions: %+v", issue.ActiveSessions)
+			}
+			return
+		}
+	}
+	t.Fatal("bug-in-login missing from issues.json")
+}
+
+func TestHandleHash_ChangesWhenActiveSessionsChange(t *testing.T) {
+	proj, _ := setupTestProject(t)
+
+	fetchHash := func(sessions []AgentSession) string {
+		withMockTmuxSessions(t, sessions)
+		ts := newTestServer(t, []tracker.Project{proj})
+		defer ts.Close()
+
+		resp, err := http.Get(ts.URL + "/p/test-project/hash")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		var payload map[string]string
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload["hash"]
+	}
+
+	hashWithout := fetchHash(nil)
+	hashWith := fetchHash([]AgentSession{{Name: "agent-bug-in-login", StartTime: "2026-04-02 21:57:59"}})
+	if hashWithout == hashWith {
+		t.Fatal("expected hash to change when active sessions change")
+	}
+}
+
+func TestSessionMatchesIssue(t *testing.T) {
+	tests := []struct {
+		name        string
+		sessionName string
+		slug        string
+		want        bool
+	}{
+		{name: "normalized dispatch session", sessionName: "agent-api-integrate-with-claude-session-names-to-show-active-agent-work", slug: "api/integrate-with-claude-session-names-to-show-active-agent-work", want: true},
+		{name: "plain slug fragment", sessionName: "claude-watch-bug-in-login", slug: "bug-in-login", want: true},
+		{name: "different issue", sessionName: "agent-something-else", slug: "bug-in-login", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sessionMatchesIssue(tt.sessionName, tt.slug); got != tt.want {
+				t.Fatalf("sessionMatchesIssue(%q, %q) = %v, want %v", tt.sessionName, tt.slug, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -428,6 +636,102 @@ func TestHandleUpdateIssue_404ForUnknownSlug(t *testing.T) {
 
 	body := `{"status":"done"}`
 	resp, err := http.Post(ts.URL+"/p/test-project/issue/nonexistent", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestHandleDetail_ShowsEditInNvimAction(t *testing.T) {
+	proj, _ := setupTestProject(t)
+	ts := newTestServer(t, []tracker.Project{proj})
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/p/test-project/issue/bug-in-login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "Edit in nvim") {
+		t.Fatalf("detail page missing Edit in nvim action: %s", body)
+	}
+}
+
+func TestHandleEditIssueInNvim_UsesLauncherAndPreservesComments(t *testing.T) {
+	proj, _ := setupTestProject(t)
+	issuePath := filepath.Join(proj.IssueDir, "bug-in-login.md")
+	if err := tracker.AddComment(issuePath, 0, "Keep me", "app"); err != nil {
+		t.Fatal(err)
+	}
+
+	origLauncher := launchIssueBodyEditor
+	t.Cleanup(func() { launchIssueBodyEditor = origLauncher })
+	launchIssueBodyEditor = func(proj *tracker.Project, issue *tracker.Issue) (BodyEditResponse, error) {
+		updated := "Edited in nvim"
+		if err := tracker.UpdateIssueFrontmatter(issue.FilePath, tracker.IssueUpdate{Body: &updated}); err != nil {
+			return BodyEditResponse{}, err
+		}
+		return BodyEditResponse{Status: "launched", Session: "agent-bug-in-login-edit", Message: "Opened in nvim"}, nil
+	}
+
+	ts := newTestServer(t, []tracker.Project{proj})
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/p/test-project/issue/bug-in-login/edit-in-nvim", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var result BodyEditResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "launched" {
+		t.Fatalf("expected launched status, got %#v", result)
+	}
+
+	issues, err := tracker.LoadIssues(proj.IssueDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, issue := range issues {
+		if issue.Slug == "bug-in-login" {
+			if issue.BodyRaw != "Edited in nvim" {
+				t.Fatalf("expected updated body, got %q", issue.BodyRaw)
+			}
+			comments, err := tracker.LoadComments(issue.FilePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(comments) != 1 || comments[0].Text != "Keep me" {
+				t.Fatalf("expected preserved comments, got %#v", comments)
+			}
+			return
+		}
+	}
+	t.Fatal("issue not found after nvim edit")
+}
+
+func TestHandleEditIssueInNvim_404ForUnknownSlug(t *testing.T) {
+	proj, _ := setupTestProject(t)
+	ts := newTestServer(t, []tracker.Project{proj})
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/p/test-project/issue/nonexistent/edit-in-nvim", "application/json", strings.NewReader(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}

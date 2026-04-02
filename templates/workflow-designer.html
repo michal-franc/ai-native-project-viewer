@@ -528,7 +528,7 @@
         }
 
         .inspector-textarea {
-            min-height: 88px;
+            min-height: 296px;
             resize: vertical;
             font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
             line-height: 1.45;
@@ -732,7 +732,7 @@
 
         .workflow-linear {
             display: flex;
-            align-items: stretch;
+            align-items: flex-start;
             gap: 18px;
         }
 
@@ -781,6 +781,30 @@
             font-size: 13px;
             line-height: 1.5;
             color: rgba(255, 255, 255, 0.92);
+        }
+
+        .status-card-prompt {
+            margin-top: 14px;
+            padding: 12px;
+            border-radius: 14px;
+            background: rgba(15, 23, 42, 0.18);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+        }
+
+        .status-card-prompt-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            opacity: 0.76;
+            margin-bottom: 6px;
+            font-weight: 700;
+        }
+
+        .status-card-prompt-text {
+            font-size: 12px;
+            line-height: 1.5;
+            color: rgba(255, 255, 255, 0.94);
+            white-space: pre-wrap;
         }
 
         .transition-stack {
@@ -994,6 +1018,10 @@
                         <div id="readiness-root"></div>
                     </div>
                     <div class="readiness-group">
+                        <div class="readiness-heading">Workflow Tester</div>
+                        <div id="tester-root"></div>
+                    </div>
+                    <div class="readiness-group">
                         <div class="readiness-heading">Debug</div>
                         <div id="debug-root"></div>
                     </div>
@@ -1055,6 +1083,7 @@
 
     <script id="workflow-json" type="application/json">{{.WorkflowJSON}}</script>
     <script id="workflow-yaml" type="text/plain">{{.WorkflowYAML}}</script>
+    <script id="workflow-issues" type="application/json">{{.WorkflowIssues}}</script>
     <script src="/static/workflow-designer-v2.js"></script>
     <script>
     if (!window.__workflowDesignerV2) {
@@ -1257,7 +1286,7 @@
         }
 
         if (key === 'approval-path') {
-            const approval = { id: makeId('approval'), type: 'approval', x: anchorX + 250, y: anchorY + 70, title: 'Approval Gate', summary: 'Human must approve for the flow to continue.', description: '', template: '', validation: ['approved_for: backlog'], sideEffects: [] };
+            const approval = { id: makeId('approval'), type: 'approval', x: anchorX + 250, y: anchorY + 70, title: 'Approval Gate', summary: 'Human must approve for the flow to continue.', description: '', template: '', validation: ['human_approval: backlog'], sideEffects: [] };
             const accepted = { id: makeId('outcome'), type: 'outcome', x: anchorX + 520, y: anchorY, title: 'Approved', summary: 'Transition can continue.', description: '', template: '', validation: [], sideEffects: [] };
             const retry = { id: makeId('outcome'), type: 'outcome', x: anchorX + 520, y: anchorY + 150, title: 'Needs Changes', summary: 'Return for updates before approval.', description: '', template: '', validation: [], sideEffects: [] };
             state.nodes.push(approval, accepted, retry);
@@ -1883,7 +1912,7 @@
 
                 <label class="inspector-label">Validation Rules</label>
                 <textarea class="inspector-textarea" id="field-validation">${escapeHTML((node.validation || []).join('\n'))}</textarea>
-                <div class="inspector-help">One rule per line, for example <code>has_checkboxes</code> or <code>approved_for: backlog</code>.</div>
+                <div class="inspector-help">One rule per line, for example <code>has_checkboxes</code> or <code>human_approval: backlog</code>.</div>
 
                 <label class="inspector-label">Side Effects</label>
                 <textarea class="inspector-textarea" id="field-side-effects">${escapeHTML((node.sideEffects || []).join('\n'))}</textarea>

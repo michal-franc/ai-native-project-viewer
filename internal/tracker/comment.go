@@ -82,6 +82,12 @@ func SerializeComments(comments []Comment) string {
 }
 
 func SaveComments(filePath string, comments []Comment) error {
+	return withIssueLock(filePath, func() error {
+		return saveCommentsLocked(filePath, comments)
+	})
+}
+
+func saveCommentsLocked(filePath string, comments []Comment) error {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", filePath, err)
@@ -89,7 +95,11 @@ func SaveComments(filePath string, comments []Comment) error {
 
 	body, _ := ParseComments(string(data))
 	result := body + SerializeComments(comments)
-	return os.WriteFile(filePath, []byte(result), 0644)
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", filePath, err)
+	}
+	return writeFileAtomically(filePath, []byte(result), info.Mode().Perm())
 }
 
 func NextCommentID(comments []Comment) int {
@@ -103,62 +113,66 @@ func NextCommentID(comments []Comment) int {
 }
 
 func AddComment(filePath string, block int, text, source string) error {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("reading %s: %w", filePath, err)
-	}
+	return withIssueLock(filePath, func() error {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", filePath, err)
+		}
 
-	_, existing := ParseComments(string(data))
-
-	c := Comment{
-		ID:     NextCommentID(existing),
-		Block:  block,
-		Date:   time.Now().Format("2006-01-02"),
-		Text:   text,
-		Status: "open",
-		Source: source,
-	}
-	existing = append(existing, c)
-
-	return SaveComments(filePath, existing)
+		_, existing := ParseComments(string(data))
+		c := Comment{
+			ID:     NextCommentID(existing),
+			Block:  block,
+			Date:   time.Now().Format("2006-01-02"),
+			Text:   text,
+			Status: "open",
+			Source: source,
+		}
+		existing = append(existing, c)
+		return saveCommentsLocked(filePath, existing)
+	})
 }
 
 func ToggleComment(filePath string, commentID int) error {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("reading %s: %w", filePath, err)
-	}
-
-	_, comments := ParseComments(string(data))
-	for i := range comments {
-		if comments[i].ID == commentID {
-			if comments[i].Status == "done" {
-				comments[i].Status = "open"
-			} else {
-				comments[i].Status = "done"
-			}
-			break
+	return withIssueLock(filePath, func() error {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", filePath, err)
 		}
-	}
 
-	return SaveComments(filePath, comments)
+		_, comments := ParseComments(string(data))
+		for i := range comments {
+			if comments[i].ID == commentID {
+				if comments[i].Status == "done" {
+					comments[i].Status = "open"
+				} else {
+					comments[i].Status = "done"
+				}
+				break
+			}
+		}
+
+		return saveCommentsLocked(filePath, comments)
+	})
 }
 
 func DeleteComment(filePath string, commentID int) error {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("reading %s: %w", filePath, err)
-	}
-
-	_, comments := ParseComments(string(data))
-	var filtered []Comment
-	for _, c := range comments {
-		if c.ID != commentID {
-			filtered = append(filtered, c)
+	return withIssueLock(filePath, func() error {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", filePath, err)
 		}
-	}
 
-	return SaveComments(filePath, filtered)
+		_, comments := ParseComments(string(data))
+		var filtered []Comment
+		for _, c := range comments {
+			if c.ID != commentID {
+				filtered = append(filtered, c)
+			}
+		}
+
+		return saveCommentsLocked(filePath, filtered)
+	})
 }
 
 func LoadComments(filePath string) ([]Comment, error) {

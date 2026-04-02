@@ -1,20 +1,21 @@
 package main
 
 import (
-	"embed"
 	"crypto/sha256"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"io"
 	"net/http"
-	"time"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/michal-franc/issue-viewer/internal/tracker"
 	"gopkg.in/yaml.v3"
@@ -133,6 +134,22 @@ type Server struct {
 	tmpl     *template.Template
 }
 
+type AgentSession struct {
+	Name      string `json:"name"`
+	StartTime string `json:"start_time"`
+}
+
+type IssueView struct {
+	*tracker.Issue
+	ActiveSessions []AgentSession
+}
+
+func (i *IssueView) HasActiveAgent() bool {
+	return i != nil && len(i.ActiveSessions) > 0
+}
+
+var listTmuxSessions = defaultListTmuxSessions
+
 func NewServer(projects []tracker.Project) (*Server, error) {
 	tmpl, err := template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html")
 	if err != nil {
@@ -186,10 +203,14 @@ func (s *Server) handleProjectRoutes(w http.ResponseWriter, r *http.Request) {
 		s.handleList(w, r, proj, prefix)
 	case rest == "board":
 		s.handleBoard(w, r, proj, prefix)
+	case rest == "workflow-flow":
+		s.handleWorkflowFlow(w, r, proj, prefix)
 	case rest == "workflow-designer" && r.Method == http.MethodGet:
 		s.handleWorkflowDesigner(w, r, proj, prefix)
 	case rest == "workflow-designer/data" && r.Method == http.MethodGet:
 		s.handleWorkflowDesignerData(w, r, proj)
+	case rest == "workflow-designer/preview" && r.Method == http.MethodPost:
+		s.handleWorkflowDesignerPreview(w, r, proj)
 	case rest == "workflow-designer" && r.Method == http.MethodPost:
 		s.handleSaveWorkflowDesigner(w, r, proj)
 	case rest == "hash":
@@ -210,6 +231,8 @@ func (s *Server) handleProjectRoutes(w http.ResponseWriter, r *http.Request) {
 		s.handleDeleteComment(w, r, proj, prefix)
 	case strings.HasPrefix(rest, "issue/") && strings.HasSuffix(rest, "/dispatch") && r.Method == http.MethodPost:
 		s.handleDispatchAgent(w, r, proj, prefix)
+	case strings.HasPrefix(rest, "issue/") && strings.HasSuffix(rest, "/edit-in-nvim") && r.Method == http.MethodPost:
+		s.handleEditIssueInNvim(w, r, proj, prefix)
 	case strings.HasPrefix(rest, "issue/") && strings.HasSuffix(rest, "/approve") && r.Method == http.MethodPost:
 		s.handleApproveIssue(w, r, proj, prefix)
 	case strings.HasPrefix(rest, "issue/") && strings.HasSuffix(rest, "/delete") && r.Method == http.MethodPost:
@@ -255,17 +278,23 @@ func (s *Server) handleProjectList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var summaries []ProjectSummary
-	for _, p := range s.projects {
-		issues, _ := tracker.LoadIssues(p.IssueDir)
-		docs, _ := tracker.LoadDocs(p.DocsDir)
-		summaries = append(summaries, ProjectSummary{
-			Name:       p.Name,
-			Slug:       p.Slug,
-			IssueCount: len(issues),
-			DocCount:   len(docs),
-		})
+	summaries := make([]ProjectSummary, len(s.projects))
+	var wg sync.WaitGroup
+	for i, p := range s.projects {
+		wg.Add(1)
+		go func(i int, p tracker.Project) {
+			defer wg.Done()
+			issues, _ := tracker.LoadIssues(p.IssueDir)
+			docs, _ := tracker.LoadDocs(p.DocsDir)
+			summaries[i] = ProjectSummary{
+				Name:       p.Name,
+				Slug:       p.Slug,
+				IssueCount: len(issues),
+				DocCount:   len(docs),
+			}
+		}(i, p)
 	}
+	wg.Wait()
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "projects.html", ProjectListData{Projects: summaries}); err != nil {
@@ -276,7 +305,7 @@ func (s *Server) handleProjectList(w http.ResponseWriter, r *http.Request) {
 // --- Issue List ---
 
 type ListData struct {
-	Issues      []*tracker.Issue
+	Issues      []*IssueView
 	Statuses    []string
 	Systems     []string
 	Priorities  []string
@@ -287,6 +316,7 @@ type ListData struct {
 	Filtered    int
 	Prefix      string
 	ProjectName string
+	ActiveBots  int
 }
 
 type FilterParams struct {
@@ -319,9 +349,10 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request, proj *tracke
 	}
 
 	filtered := filterIssues(issues, filter)
+	sessionMap, activeBots := sessionsByIssueSlug(issues)
 
 	data := ListData{
-		Issues:      filtered,
+		Issues:      issueViews(filtered, sessionMap),
 		Statuses:    statuses,
 		Systems:     systems,
 		Priorities:  priorities,
@@ -332,6 +363,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request, proj *tracke
 		Filtered:    len(filtered),
 		Prefix:      prefix,
 		ProjectName: proj.Name,
+		ActiveBots:  activeBots,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -343,14 +375,23 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request, proj *tracke
 // --- Issue Detail ---
 
 type DetailData struct {
-	Issue          *tracker.Issue
-	BackURL        string
-	Prefix         string
-	ProjectName    string
-	Statuses       []string
-	SlugMap        map[string]string
-	NeedsApproval  string // next status name if it requires approved_for, else empty
+	Issue         *IssueView
+	BackURL       string
+	Prefix        string
+	ProjectName   string
+	Statuses      []string
+	SlugMap       map[string]string
+	NeedsApproval string // next status name if it requires human approval, else empty
+	ActiveBots    int
 }
+
+type BodyEditResponse struct {
+	Status  string `json:"status"`
+	Session string `json:"session,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+var launchIssueBodyEditor = startIssueBodyEditor
 
 func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
 	path := strings.TrimPrefix(r.URL.Path, prefix+"/issue/")
@@ -399,17 +440,19 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *trac
 		slugMap[filepath.Base(issue.Slug)] = issue.Slug
 	}
 
+	sessionMap, activeBots := sessionsByIssueSlug(issues)
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	wf := proj.LoadWorkflow()
+	wf := proj.LoadWorkflowForIssue(found)
 	statuses := orderedStatusesForIssue(wf, found.Status)
 
-	// Check if the next status requires approved_for validation
+	// Check if the next transition requires human approval.
 	var needsApproval string
 	nextStatus := wf.NextStatus(found.Status)
 	if nextStatus != "" {
-		if ns := wf.GetStatus(nextStatus); ns != nil {
-			for _, v := range ns.Validation {
-				if strings.HasPrefix(v, "approved_for:") {
+		if transition := wf.GetTransition(found.Status, nextStatus); transition != nil {
+			for _, action := range transition.Actions {
+				if action.Type == "require_human_approval" {
 					needsApproval = nextStatus
 					break
 				}
@@ -417,7 +460,16 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *trac
 		}
 	}
 
-	if err := s.tmpl.ExecuteTemplate(w, "detail.html", DetailData{Issue: found, BackURL: backURL, Prefix: prefix, ProjectName: proj.Name, Statuses: statuses, SlugMap: slugMap, NeedsApproval: needsApproval}); err != nil {
+	if err := s.tmpl.ExecuteTemplate(w, "detail.html", DetailData{
+		Issue:         issueView(found, sessionMap),
+		BackURL:       backURL,
+		Prefix:        prefix,
+		ProjectName:   proj.Name,
+		Statuses:      statuses,
+		SlugMap:       slugMap,
+		NeedsApproval: needsApproval,
+		ActiveBots:    activeBots,
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -427,7 +479,7 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *trac
 type BoardColumn struct {
 	Status      string
 	Description string
-	Issues      []*tracker.Issue
+	Issues      []*IssueView
 }
 
 type BoardData struct {
@@ -443,6 +495,7 @@ type BoardData struct {
 	Labels      []string
 	Prefix      string
 	ProjectName string
+	ActiveBots  int
 }
 
 type WorkflowDesignerData struct {
@@ -450,10 +503,15 @@ type WorkflowDesignerData struct {
 	ProjectName    string
 	WorkflowJSON   string
 	WorkflowYAML   string
+	WorkflowIssues string
 	WorkflowSource string
 	WorkflowTarget string
 }
 
+type WorkflowFlowData struct {
+	Prefix      string
+	ProjectName string
+}
 
 func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
 	issues, err := tracker.LoadIssues(proj.IssueDir)
@@ -538,15 +596,16 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *track
 	wf := proj.LoadWorkflow()
 	statusOrder := wf.GetStatusOrder()
 	statusDescs := wf.GetStatusDescriptions()
+	sessionMap, activeBots := sessionsByIssueSlug(issues)
 
-	byStatus := map[string][]*tracker.Issue{}
+	byStatus := map[string][]*IssueView{}
 	seen := map[string]bool{}
 	for _, issue := range issues {
 		st := issue.Status
 		if st == "" {
 			st = "none"
 		}
-		byStatus[st] = append(byStatus[st], issue)
+		byStatus[st] = append(byStatus[st], issueView(issue, sessionMap))
 		seen[st] = true
 	}
 
@@ -576,6 +635,7 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *track
 		Labels:      labels,
 		Prefix:      prefix,
 		ProjectName: proj.Name,
+		ActiveBots:  activeBots,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -598,6 +658,32 @@ func (s *Server) handleWorkflowDesigner(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	issues, err := tracker.LoadIssues(proj.IssueDir)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	type workflowIssue struct {
+		Slug   string `json:"slug"`
+		Title  string `json:"title"`
+		Status string `json:"status"`
+		System string `json:"system"`
+	}
+	issueOptions := make([]workflowIssue, 0, len(issues))
+	for _, issue := range issues {
+		issueOptions = append(issueOptions, workflowIssue{
+			Slug:   issue.Slug,
+			Title:  issue.Title,
+			Status: issue.Status,
+			System: issue.System,
+		})
+	}
+	issuesJSON, err := json.Marshal(issueOptions)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	source := "built-in default workflow"
 	target := workflowFileTarget(proj)
 	switch {
@@ -613,8 +699,19 @@ func (s *Server) handleWorkflowDesigner(w http.ResponseWriter, r *http.Request, 
 		ProjectName:    proj.Name,
 		WorkflowJSON:   string(workflowJSON),
 		WorkflowYAML:   string(workflowYAML),
+		WorkflowIssues: string(issuesJSON),
 		WorkflowSource: source,
 		WorkflowTarget: target,
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) handleWorkflowFlow(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.tmpl.ExecuteTemplate(w, "workflow-flow.html", WorkflowFlowData{
+		Prefix:      prefix,
+		ProjectName: proj.Name,
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -636,6 +733,63 @@ func (s *Server) handleWorkflowDesignerData(w http.ResponseWriter, r *http.Reque
 		"workflow": wf,
 		"source":   source,
 		"target":   target,
+	})
+}
+
+func (s *Server) handleWorkflowDesignerPreview(w http.ResponseWriter, r *http.Request, proj *tracker.Project) {
+	var req struct {
+		Slug string `json:"slug"`
+		To   string `json:"to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Slug) == "" || strings.TrimSpace(req.To) == "" {
+		http.Error(w, `{"error":"slug and to are required"}`, http.StatusBadRequest)
+		return
+	}
+
+	issues, err := tracker.LoadIssues(proj.IssueDir)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"failed loading issues: %s"}`, strings.ReplaceAll(err.Error(), `"`, `'`)), http.StatusInternalServerError)
+		return
+	}
+
+	var issue *tracker.Issue
+	for _, candidate := range issues {
+		if candidate.Slug == req.Slug {
+			issue = candidate
+			break
+		}
+	}
+	if issue == nil {
+		http.Error(w, `{"error":"issue not found"}`, http.StatusNotFound)
+		return
+	}
+
+	comments, err := tracker.LoadComments(issue.FilePath)
+	if err != nil && !os.IsNotExist(err) {
+		http.Error(w, fmt.Sprintf(`{"error":"failed loading comments: %s"}`, strings.ReplaceAll(err.Error(), `"`, `'`)), http.StatusInternalServerError)
+		return
+	}
+
+	wf := proj.LoadWorkflow().ForSystem(issue.System)
+	preview := wf.PreviewTransition(issue, issue.Status, strings.TrimSpace(req.To), issue.System, comments)
+	if !wf.IsValidTransition(issue.Status, strings.TrimSpace(req.To)) {
+		preview.Allowed = false
+		preview.ValidationError = fmt.Sprintf("cannot transition from %q to %q", issue.Status, strings.TrimSpace(req.To))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"issue": map[string]string{
+			"slug":   issue.Slug,
+			"title":  issue.Title,
+			"status": issue.Status,
+			"system": issue.System,
+		},
+		"preview": preview,
 	})
 }
 
@@ -927,41 +1081,55 @@ func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request, pro
 
 func (s *Server) handleHash(w http.ResponseWriter, r *http.Request, proj *tracker.Project) {
 	issues, _ := tracker.LoadIssues(proj.IssueDir)
+	sessionMap, activeBots := sessionsByIssueSlug(issues)
 	h := sha256.New()
 	for _, issue := range issues {
 		fmt.Fprintf(h, "%s:%s:%s:%d\n", issue.Slug, issue.Status, issue.Assignee, issue.ModTime.UnixNano())
+		for _, session := range sessionMap[issue.Slug] {
+			fmt.Fprintf(h, "session:%s:%s:%s\n", issue.Slug, session.Name, session.StartTime)
+		}
 	}
+	fmt.Fprintf(h, "active-bots:%d\n", activeBots)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"hash": fmt.Sprintf("%x", h.Sum(nil))})
 }
 
 type issueJSON struct {
-	Slug     string   `json:"slug"`
-	Title    string   `json:"title"`
-	Status   string   `json:"status"`
-	System   string   `json:"system"`
-	Priority string   `json:"priority"`
-	Assignee string   `json:"assignee"`
-	Version  string   `json:"version"`
-	Labels   []string `json:"labels"`
+	Slug           string         `json:"slug"`
+	Title          string         `json:"title"`
+	Status         string         `json:"status"`
+	System         string         `json:"system"`
+	Priority       string         `json:"priority"`
+	Assignee       string         `json:"assignee"`
+	Version        string         `json:"version"`
+	Labels         []string       `json:"labels"`
+	ActiveSessions []AgentSession `json:"active_sessions"`
+	HasActiveAgent bool           `json:"has_active_agent"`
 }
 
 func (s *Server) handleIssuesJSON(w http.ResponseWriter, r *http.Request, proj *tracker.Project) {
 	issues, _ := tracker.LoadIssues(proj.IssueDir)
+	sessionMap, _ := sessionsByIssueSlug(issues)
 	result := make([]issueJSON, len(issues))
 	for i, issue := range issues {
+		activeSessions := append([]AgentSession(nil), sessionMap[issue.Slug]...)
 		result[i] = issueJSON{
-			Slug:     issue.Slug,
-			Title:    issue.Title,
-			Status:   issue.Status,
-			System:   issue.System,
-			Priority: issue.Priority,
-			Assignee: issue.Assignee,
-			Version:  issue.Version,
-			Labels:   issue.Labels,
+			Slug:           issue.Slug,
+			Title:          issue.Title,
+			Status:         issue.Status,
+			System:         issue.System,
+			Priority:       issue.Priority,
+			Assignee:       issue.Assignee,
+			Version:        issue.Version,
+			Labels:         issue.Labels,
+			ActiveSessions: activeSessions,
+			HasActiveAgent: len(activeSessions) > 0,
 		}
 		if result[i].Labels == nil {
 			result[i].Labels = []string{}
+		}
+		if result[i].ActiveSessions == nil {
+			result[i].ActiveSessions = []AgentSession{}
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1007,20 +1175,166 @@ func (s *Server) handleApproveIssue(w http.ResponseWriter, r *http.Request, proj
 		return
 	}
 
-	// Toggle: if already approved for this status, clear it
-	var approvedFor string
-	if !strings.EqualFold(issue.ApprovedFor, body.Status) {
-		approvedFor = body.Status
+	// Toggle: if already human-approved for this status, clear it
+	var humanApproval string
+	if !strings.EqualFold(issue.HumanApproval, body.Status) {
+		humanApproval = body.Status
 	}
 
-	update := tracker.IssueUpdate{ApprovedFor: &approvedFor}
+	update := tracker.IssueUpdate{HumanApproval: &humanApproval}
 	if err := tracker.UpdateIssueFrontmatter(issue.FilePath, update); err != nil {
 		http.Error(w, "update failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "approved_for": approvedFor})
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "human_approval": humanApproval})
+}
+
+func resolveProjectWorkDir(proj *tracker.Project) string {
+	if proj != nil && proj.WorkDir != "" {
+		return proj.WorkDir
+	}
+	workDir, _ := os.Getwd()
+	return workDir
+}
+
+func startIssueBodyEditor(proj *tracker.Project, issue *tracker.Issue) (BodyEditResponse, error) {
+	if issue == nil {
+		return BodyEditResponse{}, fmt.Errorf("issue is required")
+	}
+
+	workDir := resolveProjectWorkDir(proj)
+	session := tmuxSessionName(issue.Slug) + "-edit"
+	waitSignal := session + "-done"
+	baseContent, err := os.ReadFile(issue.FilePath)
+	if err != nil {
+		return BodyEditResponse{}, fmt.Errorf("read issue file: %w", err)
+	}
+	baseHash := sha256.Sum256(baseContent)
+
+	bodyFile, err := os.CreateTemp("", "issue-body-*.md")
+	if err != nil {
+		return BodyEditResponse{}, fmt.Errorf("create temp body file: %w", err)
+	}
+	bodyPath := bodyFile.Name()
+	bodyContent := issue.BodyRaw
+	if bodyContent != "" && !strings.HasSuffix(bodyContent, "\n") {
+		bodyContent += "\n"
+	}
+	if _, err := bodyFile.WriteString(bodyContent); err != nil {
+		bodyFile.Close()
+		os.Remove(bodyPath)
+		return BodyEditResponse{}, fmt.Errorf("write temp body file: %w", err)
+	}
+	if err := bodyFile.Close(); err != nil {
+		os.Remove(bodyPath)
+		return BodyEditResponse{}, fmt.Errorf("close temp body file: %w", err)
+	}
+
+	statusFile, err := os.CreateTemp("", "issue-body-edit-status-*.txt")
+	if err != nil {
+		os.Remove(bodyPath)
+		return BodyEditResponse{}, fmt.Errorf("create temp status file: %w", err)
+	}
+	statusPath := statusFile.Name()
+	statusFile.Close()
+
+	cleanup := func() {
+		os.Remove(bodyPath)
+		os.Remove(statusPath)
+	}
+
+	if err := exec.Command("tmux", "new-session", "-d", "-s", session, "-c", workDir).Run(); err != nil {
+		cleanup()
+		return BodyEditResponse{}, fmt.Errorf("create tmux session: %w", err)
+	}
+
+	sessionReady := false
+	defer func() {
+		if !sessionReady {
+			exec.Command("tmux", "kill-session", "-t", session).Run()
+			cleanup()
+		}
+	}()
+
+	exec.Command("tmux", "rename-window", "-t", session, issue.Slug).Run()
+
+	if proj != nil && proj.I3Workspace != "" {
+		if err := exec.Command("i3-msg", "workspace", proj.I3Workspace).Run(); err != nil {
+			return BodyEditResponse{}, fmt.Errorf("switch i3 workspace: %w", err)
+		}
+	}
+
+	if err := exec.Command("i3-msg", "exec", fmt.Sprintf("alacritty -e tmux attach -t %s", session)).Run(); err != nil {
+		return BodyEditResponse{}, fmt.Errorf("open alacritty: %w", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	editCmd := fmt.Sprintf("nvim %q; code=$?; printf '%%s' \"$code\" > %q; tmux wait-for -S %q; exit $code", bodyPath, statusPath, waitSignal)
+	if err := exec.Command("tmux", "send-keys", "-t", session, editCmd, "Enter").Run(); err != nil {
+		return BodyEditResponse{}, fmt.Errorf("start nvim: %w", err)
+	}
+
+	issueFilePath := issue.FilePath
+	go func() {
+		defer cleanup()
+		if err := exec.Command("tmux", "wait-for", waitSignal).Run(); err != nil {
+			return
+		}
+		defer exec.Command("tmux", "kill-session", "-t", session).Run()
+
+		statusBytes, err := os.ReadFile(statusPath)
+		if err != nil {
+			return
+		}
+		if strings.TrimSpace(string(statusBytes)) != "0" {
+			return
+		}
+
+		updatedBody, err := os.ReadFile(bodyPath)
+		if err != nil {
+			return
+		}
+		updated := strings.TrimRight(string(updatedBody), "\n")
+		currentContent, err := os.ReadFile(issueFilePath)
+		if err != nil {
+			return
+		}
+		if sha256.Sum256(currentContent) != baseHash {
+			return
+		}
+		_ = tracker.UpdateIssueFrontmatter(issueFilePath, tracker.IssueUpdate{Body: &updated})
+	}()
+
+	sessionReady = true
+	return BodyEditResponse{
+		Status:  "launched",
+		Session: session,
+		Message: "Opened in nvim. The issue body will sync back after the editor exits.",
+	}, nil
+}
+
+func (s *Server) handleEditIssueInNvim(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	slug := strings.TrimPrefix(r.URL.Path, prefix+"/issue/")
+	slug = strings.TrimSuffix(slug, "/edit-in-nvim")
+
+	issue := s.findIssueBySlug(proj, slug)
+	if issue == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	resp, err := launchIssueBodyEditor(proj, issue)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 // --- Create Issue ---
@@ -1130,24 +1444,20 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request, proj *trac
 
 // --- Dispatch to Agent ---
 
-func buildAgentPrompt(issue *tracker.Issue) string {
-	// Determine goal based on current status
-	var goalSection string
-	status := strings.ToLower(strings.TrimSpace(issue.Status))
-	switch {
-	case status == "idea" || status == "in design":
-		goalSection = `## Your goal
+func buildAgentPrompt(issue *tracker.Issue, wf *tracker.WorkflowConfig) string {
+	currentPrompt := "Use issue-cli to inspect the current workflow requirements for this status before making changes."
+	if wf != nil {
+		if prompt := wf.StatusPrompt(issue.Status); strings.TrimSpace(prompt) != "" {
+			currentPrompt = prompt
+		}
+	}
 
-This issue starts from "` + issue.Status + `". Your final destination is "backlog".
-Work through the workflow steps until the issue reaches backlog status, then stop.
-  idea -> in design -> backlog`
-	default:
-		goalSection = `## Your goal
-
-This issue starts from "` + issue.Status + `". Your final destination is "human-testing".
-Work through the workflow steps until the issue reaches human-testing, then stop.
-That status requires manual verification by a human.
-  backlog -> in progress -> testing -> human-testing`
+	statusReminder := ""
+	switch issue.Status {
+	case "in design":
+		statusReminder = "When the design is complete, stop and ask the human to approve backlog in the issue viewer before attempting that transition."
+	case "backlog":
+		statusReminder = "Do not run `issue-cli start` until the issue is human-approved for `in progress` in the issue viewer."
 	}
 
 	return fmt.Sprintf(`You have been assigned this issue: %s
@@ -1158,12 +1468,23 @@ Learn the workflow process first:
   issue-cli process workflow      # understand the status lifecycle
   issue-cli process transitions   # understand what each transition requires
 
+## Your goal
+
+Move this issue forward correctly using the configured workflow.
+Use issue-cli to inspect the current status requirements, complete the required work, and only transition when the workflow says the issue is ready.
+Stop and ask the user whenever clarification, approval, or manual verification is required.
+
+## Current status guidance
+
+%s
+
 %s
 
 ## How to work on this issue
 
 1. Run: issue-cli start %s
-   This claims the issue and shows your checklist and next steps.
+   If the issue is already approved for the next status, this claims the issue and shows your checklist and next steps.
+   If approval is missing, stop and ask the human to approve it in the issue viewer.
 
 2. Run: issue-cli show %s
    Read the full context — body, comments, checklist status.
@@ -1191,11 +1512,28 @@ These are safe to run without asking the user:
   issue-cli check %s "<text>"         # mark a checkbox done
   issue-cli transition %s --to "<next-status>"  # move forward
   issue-cli append %s --body "content"          # append section to issue body
+  issue-cli retrospective %s --body "content"   # save workflow feedback under retros/ in the project
 
 ## CRITICAL: NEVER modify issue .md files manually. Always use issue-cli commands.
 
 ## If you encounter a bug in issue-cli itself, report it:
   issue-cli report-bug "description of what went wrong"
+This saves a bug report under bugs/ in the server root.
+The current issue slug is attached automatically for dispatched sessions.
+
+## Workflow review
+
+If you stop because human approval, manual verification, clarification, or tooling/workflow blockage is required, run:
+  issue-cli retrospective %s --body "Base workflow: ...\nSubsystem workflow for %s: ...\nMissing system-specific instructions: ...\nTooling/workflow friction: ..."
+This saves a retrospective under retros/ in the project.
+
+Then briefly tell the user how the workflow could be improved.
+Cover both:
+  - the base workflow
+  - the relevant subsystem workflow guidance for this issue
+  - any missing system-specific instructions that should be added for %s
+
+If you hit friction, ambiguity, or missing guardrails while using issue-cli or the workflow, call that out explicitly.
 
 ## Commands that require user approval — DO NOT run without asking
 
@@ -1210,12 +1548,13 @@ These are safe to run without asking the user:
 
 %s`,
 		issue.Slug,
-		goalSection,
+		currentPrompt,
+		statusReminder,
 		issue.Slug,
 		issue.Slug,
 		issue.Slug,
 		issue.Slug,
-		issue.Slug, issue.Slug, issue.Slug, issue.Slug, issue.Slug, issue.Slug,
+		issue.Slug, issue.Slug, issue.Slug, issue.Slug, issue.Slug, issue.Slug, issue.Slug, issue.System, issue.System, issue.Slug,
 		issue.Title, issue.Status, issue.Priority,
 		issue.BodyRaw)
 }
@@ -1268,13 +1607,11 @@ func (s *Server) handleDispatchAgent(w http.ResponseWriter, r *http.Request, pro
 		agentType = body.Agent
 	}
 
-	prompt := buildAgentPrompt(issue)
+	wf := proj.LoadWorkflowForIssue(issue)
+	prompt := buildAgentPrompt(issue, wf)
 	session := tmuxSessionName(slug)
 
-	workDir := proj.WorkDir
-	if workDir == "" {
-		workDir, _ = os.Getwd()
-	}
+	workDir := resolveProjectWorkDir(proj)
 
 	// Write prompt to temp file (needed because tmux send-keys can't handle multi-line reliably)
 	promptFile, err := os.CreateTemp("", "agent-prompt-*.txt")
@@ -1312,6 +1649,12 @@ func (s *Server) handleDispatchAgent(w http.ResponseWriter, r *http.Request, pro
 	// Step 4: Set ISSUE_CLI_LOG env var so issue-cli writes to clilog
 	runStep(&steps, fmt.Sprintf("CLI log to %s", cliLog),
 		exec.Command("tmux", "send-keys", "-t", session, fmt.Sprintf("export ISSUE_CLI_LOG=%q", cliLog), "Enter"))
+
+	serverRoot, _ := os.Getwd()
+	runStep(&steps, fmt.Sprintf("Server root env %s", serverRoot),
+		exec.Command("tmux", "send-keys", "-t", session, fmt.Sprintf("export ISSUE_VIEWER_SERVER_PWD=%q", serverRoot), "Enter"))
+	runStep(&steps, fmt.Sprintf("Issue slug env %s", issue.Slug),
+		exec.Command("tmux", "send-keys", "-t", session, fmt.Sprintf("export ISSUE_VIEWER_ISSUE_SLUG=%q", issue.Slug), "Enter"))
 
 	// Step 5: Send explicit cd (belt and suspenders)
 	runStep(&steps, fmt.Sprintf("cd %s", workDir),
@@ -1423,4 +1766,87 @@ func filterIssues(issues []*tracker.Issue, f FilterParams) []*tracker.Issue {
 		result = append(result, issue)
 	}
 	return result
+}
+
+func issueViews(issues []*tracker.Issue, sessionMap map[string][]AgentSession) []*IssueView {
+	result := make([]*IssueView, 0, len(issues))
+	for _, issue := range issues {
+		result = append(result, issueView(issue, sessionMap))
+	}
+	return result
+}
+
+func issueView(issue *tracker.Issue, sessionMap map[string][]AgentSession) *IssueView {
+	if issue == nil {
+		return nil
+	}
+	return &IssueView{
+		Issue:          issue,
+		ActiveSessions: append([]AgentSession(nil), sessionMap[issue.Slug]...),
+	}
+}
+
+func sessionsByIssueSlug(issues []*tracker.Issue) (map[string][]AgentSession, int) {
+	sessions := listTmuxSessions()
+	result := make(map[string][]AgentSession, len(issues))
+	matchedSessionNames := map[string]bool{}
+	for _, issue := range issues {
+		for _, session := range sessions {
+			if sessionMatchesIssue(session.Name, issue.Slug) {
+				result[issue.Slug] = append(result[issue.Slug], session)
+				matchedSessionNames[session.Name] = true
+			}
+		}
+	}
+	return result, len(matchedSessionNames)
+}
+
+func sessionMatchesIssue(sessionName string, slug string) bool {
+	sessionName = strings.ToLower(strings.TrimSpace(sessionName))
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	if sessionName == "" || slug == "" {
+		return false
+	}
+
+	candidates := []string{
+		slug,
+		strings.ReplaceAll(slug, "/", "-"),
+		tmuxSessionName(slug),
+	}
+	for _, candidate := range candidates {
+		if candidate != "" && strings.Contains(sessionName, strings.ToLower(candidate)) {
+			return true
+		}
+	}
+	return false
+}
+
+func defaultListTmuxSessions() []AgentSession {
+	out, err := exec.Command("tmux", "ls").Output()
+	if err != nil {
+		return nil
+	}
+
+	lineRE := regexp.MustCompile(`^([^:]+):.*\(created ([^)]+)\)`)
+	var sessions []AgentSession
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		matches := lineRE.FindStringSubmatch(line)
+		if len(matches) < 3 {
+			continue
+		}
+
+		session := AgentSession{Name: strings.TrimSpace(matches[1])}
+		if created, err := time.Parse("Mon Jan _2 15:04:05 2006", strings.TrimSpace(matches[2])); err == nil {
+			session.StartTime = created.Format("2006-01-02 15:04:05")
+		} else {
+			session.StartTime = strings.TrimSpace(matches[2])
+		}
+		sessions = append(sessions, session)
+	}
+	return sessions
 }

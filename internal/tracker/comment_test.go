@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -130,6 +131,38 @@ func TestAddComment_Multiple(t *testing.T) {
 	}
 	if comments[0].ID != 1 || comments[1].ID != 2 {
 		t.Errorf("IDs = [%d, %d], want [1, 2]", comments[0].ID, comments[1].ID)
+	}
+}
+
+func TestAddComment_ConcurrentPreservesAllComments(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "test.md")
+	os.WriteFile(fp, []byte("---\ntitle: \"Test\"\n---\n\nBody."), 0644)
+
+	const writers = 16
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if err := AddComment(fp, 0, "comment", "cli"); err != nil {
+				t.Errorf("AddComment(%d): %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	comments, err := LoadComments(fp)
+	if err != nil {
+		t.Fatalf("unexpected error loading comments: %v", err)
+	}
+	if len(comments) != writers {
+		t.Fatalf("expected %d comments, got %d", writers, len(comments))
+	}
+	for i, c := range comments {
+		if c.ID != i+1 {
+			t.Fatalf("comment[%d].ID = %d, want %d", i, c.ID, i+1)
+		}
 	}
 }
 

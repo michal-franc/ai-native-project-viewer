@@ -2,10 +2,12 @@
   window.__workflowDesignerV2 = true;
 
   const INITIAL_WORKFLOW = JSON.parse(document.getElementById('workflow-json').textContent);
+  const ISSUE_OPTIONS = parseIssueOptions(document.getElementById('workflow-issues')?.textContent || '[]');
   const INITIAL_YAML = document.getElementById('workflow-yaml').textContent.trim();
   const STORAGE_KEY = 'workflow-designer:' + location.pathname;
   const SAVE_URL = location.pathname;
   const DATA_URL = location.pathname.replace(/\/workflow-designer$/, '/workflow-designer/data');
+  const PREVIEW_URL = location.pathname.replace(/\/workflow-designer$/, '/workflow-designer/preview');
 
   const ACTION_TYPES = [
     { type: 'validate', title: 'Validate', color: '#d97706', desc: 'Run a configured validation rule before the transition completes.' },
@@ -47,6 +49,37 @@
   let debugEvents = [];
   let toastTimer = null;
 
+  function freshTesterState() {
+    return {
+      slug: '',
+      to: '',
+      transition: '',
+      loading: false,
+      viabilityLoading: false,
+      viableOnly: false,
+      viability: [],
+      result: null,
+      error: '',
+    };
+  }
+
+  let testerState = freshTesterState();
+
+  function parseIssueOptions(raw) {
+    try {
+      let parsed = JSON.parse(raw || '[]');
+      if (typeof parsed === 'string') {
+        parsed = JSON.parse(parsed || '[]');
+      }
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && Array.isArray(parsed.issues)) return parsed.issues;
+      if (parsed && typeof parsed === 'object') return Object.values(parsed);
+      return [];
+    } catch (error) {
+      return [];
+    }
+  }
+
   function countIndent(line) {
     const match = line.match(/^ */);
     return match ? match[0].length : 0;
@@ -80,6 +113,7 @@
     return {
       name: String(raw?.name ?? raw?.Name ?? '').trim(),
       description: String(raw?.description ?? raw?.Description ?? '').trim(),
+      prompt: String(raw?.prompt ?? raw?.Prompt ?? '').replace(/\r/g, '').replace(/\n+$/, ''),
     };
   }
 
@@ -209,6 +243,7 @@
     normalized.statuses.forEach(status => {
       lines.push(`  - name: ${yamlQuote(status.name)}`);
       if (status.description) lines.push(`    description: ${yamlQuote(status.description)}`);
+      if (status.prompt) emitBlock(lines, '    ', 'prompt', status.prompt);
     });
 
     lines.push('');
@@ -240,6 +275,7 @@
           overlay.statuses.forEach(status => {
             lines.push(`      - name: ${yamlQuote(status.name)}`);
             if (status.description) lines.push(`        description: ${yamlQuote(status.description)}`);
+            if (status.prompt) emitBlock(lines, '        ', 'prompt', status.prompt);
           });
         }
         lines.push('    transitions:');
@@ -404,6 +440,27 @@
           if (innerIndent <= 2) break;
           if (innerIndent === 4 && innerTrimmed.startsWith('description:')) {
             status.description = unquoteYAML(innerTrimmed.slice('description:'.length));
+            i++;
+            continue;
+          }
+          if (innerIndent === 4 && innerTrimmed === 'prompt: |') {
+            i++;
+            const body = [];
+            while (i < lines.length) {
+              const bodyLine = lines[i];
+              const bodyTrimmed = bodyLine.trim();
+              const bodyIndent = countIndent(bodyLine);
+              if (!bodyTrimmed && bodyIndent >= 6) {
+                body.push('');
+                i++;
+                continue;
+              }
+              if (bodyIndent < 6) break;
+              body.push(bodyLine.slice(6));
+              i++;
+            }
+            status.prompt = body.join('\n').replace(/\n+$/, '');
+            continue;
           }
           i++;
         }
@@ -456,6 +513,27 @@
                   if (descIndent <= 6) break;
                   if (descIndent === 8 && descTrimmed.startsWith('description:')) {
                     status.description = unquoteYAML(descTrimmed.slice('description:'.length));
+                    i++;
+                    continue;
+                  }
+                  if (descIndent === 8 && descTrimmed === 'prompt: |') {
+                    i++;
+                    const body = [];
+                    while (i < lines.length) {
+                      const bodyLine = lines[i];
+                      const bodyTrimmed = bodyLine.trim();
+                      const bodyIndent = countIndent(bodyLine);
+                      if (!bodyTrimmed && bodyIndent >= 10) {
+                        body.push('');
+                        i++;
+                        continue;
+                      }
+                      if (bodyIndent < 10) break;
+                      body.push(bodyLine.slice(10));
+                      i++;
+                    }
+                    status.prompt = body.join('\n').replace(/\n+$/, '');
+                    continue;
                   }
                   i++;
                 }
@@ -728,9 +806,13 @@
     if (duplicateNames.length) {
       items.push({ level: 'error', title: 'Duplicate statuses', desc: `Status names must be unique. Duplicates: ${duplicateNames.join(', ')}` });
     }
-    const missingDescriptions = state.workflow.statuses.filter(status => !status.description).map(status => status.name);
+      const missingDescriptions = state.workflow.statuses.filter(status => !status.description).map(status => status.name);
     if (missingDescriptions.length) {
       items.push({ level: 'warn', title: 'Missing descriptions', desc: `Statuses without descriptions: ${missingDescriptions.join(', ')}` });
+    }
+    const missingPrompts = state.workflow.statuses.filter(status => !status.prompt).map(status => status.name);
+    if (missingPrompts.length) {
+      items.push({ level: 'warn', title: 'Missing status prompts', desc: `Statuses without baseline guidance: ${missingPrompts.join(', ')}` });
     }
     const nonAdjacentBase = state.workflow.transitions.filter(transition => !isAdjacent(state.workflow.statuses, transition.from, transition.to));
     if (nonAdjacentBase.length) {
@@ -847,6 +929,125 @@
     `;
   }
 
+  function statusTransitionOptions(selected) {
+    return transitionPairs().map(pair => {
+      const value = `${pair.from}|${pair.to}`;
+      return `<option value="${escapeAttr(value)}" ${value === selected ? 'selected' : ''}>${escapeHTML(pair.from)} -> ${escapeHTML(pair.to)}</option>`;
+    }).join('');
+  }
+
+  function issueOptionLabel(issue) {
+    const parts = [issue.slug];
+    if (issue.status) parts.push(issue.status);
+    if (issue.system) parts.push(issue.system);
+    return parts.join(' | ');
+  }
+
+  function testerTransitionParts() {
+    const [from, to] = String(testerState.transition || '').split('|');
+    return { from: from || '', to: to || testerState.to || '' };
+  }
+
+  function candidateIssues() {
+    const { from } = testerTransitionParts();
+    if (!from) return ISSUE_OPTIONS.slice();
+    return ISSUE_OPTIONS.filter(issue => String(issue.status || '').trim() === from);
+  }
+
+  function visibleTesterIssues() {
+    const candidates = candidateIssues();
+    if (!testerState.viableOnly || !testerState.viability.length) return candidates;
+    const ready = new Set(testerState.viability.filter(item => item.allowed).map(item => item.slug));
+    return candidates.filter(issue => ready.has(issue.slug));
+  }
+
+  function viabilitySummary(slug) {
+    const found = testerState.viability.find(item => item.slug === slug);
+    if (!found) return '';
+    return found.allowed ? 'ready' : `blocked: ${found.reason}`;
+  }
+
+  function renderTester() {
+    const root = document.getElementById('tester-root');
+    if (!root) return;
+    const candidates = candidateIssues();
+    const visibleIssues = visibleTesterIssues();
+    const issueList = visibleIssues.map(issue => {
+      const summary = viabilitySummary(issue.slug);
+      const label = summary ? `${issueOptionLabel(issue)} | ${summary}` : issueOptionLabel(issue);
+      return `<option value="${escapeAttr(issue.slug)}">${escapeHTML(label)}</option>`;
+    }).join('');
+    const preview = testerState.result?.preview;
+    const issue = testerState.result?.issue;
+    const { from, to } = testerTransitionParts();
+    root.innerHTML = `
+      <div class="readiness-list">
+        <div class="readiness-item good">
+          <label class="inspector-label">Target Transition</label>
+          <select class="inspector-select" id="tester-transition-select">
+            <option value="">Choose target transition</option>
+            ${statusTransitionOptions(testerState.transition)}
+          </select>
+          <div class="inspector-help">${from ? `${candidates.length} candidate issues currently in ${from}.` : 'Choose a transition first to filter matching issues.'}</div>
+          <label class="inspector-label">Issue Slug</label>
+          <input class="inspector-input" id="tester-slug-input" list="workflow-issue-options" value="${escapeAttr(testerState.slug)}" placeholder="combat/example-issue">
+          <datalist id="workflow-issue-options">${issueList}</datalist>
+          <div class="inspector-chip-row">
+            <button class="designer-btn" id="run-viability-btn" ${!to || testerState.viabilityLoading ? 'disabled' : ''}>${testerState.viabilityLoading ? 'Checking...' : 'Check Viable Issues'}</button>
+            <button class="designer-btn ${testerState.viableOnly ? 'active' : ''}" id="toggle-viable-btn" ${!testerState.viability.length ? 'disabled' : ''}>${testerState.viableOnly ? 'Showing Viable Only' : 'Show Viable Only'}</button>
+          </div>
+          <button class="designer-btn primary" id="run-preview-btn" ${testerState.loading ? 'disabled' : ''}>${testerState.loading ? 'Running...' : 'Run Preview'}</button>
+        </div>
+        ${testerState.transition ? `
+          <div class="readiness-item ${testerState.viability.length ? 'good' : 'warn'}">
+            <div class="palette-item-title">Candidate issues</div>
+            <div class="readiness-item-desc">
+              ${candidates.length ? candidates.map(issue => {
+                const summary = viabilitySummary(issue.slug);
+                return `${issue.slug}${summary ? ` (${summary})` : ''}`;
+              }).join('<br>') : `No issues are currently in ${escapeHTML(from)}.`}
+            </div>
+          </div>
+        ` : ''}
+        ${testerState.error ? `
+          <div class="readiness-item error">
+            <div class="palette-item-title">Preview error</div>
+            <div class="readiness-item-desc">${escapeHTML(testerState.error)}</div>
+          </div>
+        ` : ''}
+        ${preview ? `
+          <div class="readiness-item ${preview.allowed ? 'good' : 'error'}">
+            <div class="palette-item-title">${escapeHTML(issue.title || issue.slug)}</div>
+            <div class="readiness-item-desc">
+              Current: ${escapeHTML(issue.status || '')}${issue.system ? ` | System: ${escapeHTML(issue.system)}` : ''}<br>
+              Target: ${escapeHTML(preview.to)}<br>
+              Result: ${preview.allowed ? 'Allowed' : 'Blocked'}
+            </div>
+          </div>
+          ${preview.steps.map(step => `
+            <div class="readiness-item ${step.outcome === 'failed' ? 'error' : (step.outcome === 'passed' ? 'good' : 'warn')}">
+              <div class="palette-item-title">${escapeHTML(step.summary)}</div>
+              <div class="readiness-item-desc">${escapeHTML(step.message || step.outcome)}</div>
+            </div>
+          `).join('')}
+          <div class="readiness-item ${preview.allowed ? 'good' : 'warn'}">
+            <div class="palette-item-title">Transition effects</div>
+            <div class="readiness-item-desc">
+              Prompts: ${(preview.result.injected_prompts || []).length}<br>
+              Body changed: ${preview.result.body_changed ? 'yes' : 'no'}<br>
+              Approval cleared: ${preview.result.cleared_approval ? 'yes' : 'no'}
+            </div>
+          </div>
+        ` : `
+          <div class="readiness-item warn">
+            <div class="palette-item-title">Dry-run tester</div>
+            <div class="readiness-item-desc">Pick a real issue and target transition to preview the same validation and transition engine used by the CLI.</div>
+          </div>
+        `}
+      </div>
+    `;
+  }
+
   function selectionMatches(kind, from, to, systemName, actionIndex) {
     if (!state.selected || state.selected.kind !== kind) return false;
     return (state.selected.system || '') === (systemName || '')
@@ -909,6 +1110,7 @@
           <div class="status-card-kicker">Status</div>
           <div class="status-card-title">${escapeHTML(status.name)}</div>
           <div class="status-card-desc">${escapeHTML(status.description || 'No description yet')}</div>
+          ${status.prompt ? `<div class="status-card-prompt"><div class="status-card-prompt-label">Status Prompt</div><div class="status-card-prompt-text">${escapeHTML(status.prompt)}</div></div>` : ''}
         </button>
       `);
       if (index < pairs.length) baseFlow.push(transitionCardHTML(pairs[index], ''));
@@ -972,6 +1174,9 @@
         <input class="inspector-input" id="status-name-input" value="${escapeAttr(status.name)}" placeholder="in progress">
         <label class="inspector-label">Description</label>
         <textarea class="inspector-textarea" id="status-description-input" placeholder="Explain what being in this status means.">${escapeHTML(status.description)}</textarea>
+        <label class="inspector-label">Status Prompt</label>
+        <textarea class="inspector-textarea" id="status-prompt-input" placeholder="Baseline guidance for agents working in or entering this status.">${escapeHTML(status.prompt || '')}</textarea>
+        <div class="inspector-help">This guidance is shown whenever an agent starts work in this status or transitions into it. Transition inject prompts stay additive.</div>
       </div>
       <div class="inspector-section">
         <div class="inspector-row">
@@ -1119,6 +1324,7 @@
     renderPalette();
     renderSystems();
     renderReadiness();
+    renderTester();
     renderDebug();
     renderCanvas();
     renderInspector();
@@ -1154,7 +1360,7 @@
 
   function addStatus() {
     const nextIndex = state.workflow.statuses.length + 1;
-    state.workflow.statuses.push(normalizeStatus({ name: `new-status-${nextIndex}`, description: 'Describe this status' }));
+    state.workflow.statuses.push(normalizeStatus({ name: `new-status-${nextIndex}`, description: 'Describe this status', prompt: 'Add baseline guidance for this status.' }));
     state.selected = { kind: 'status', statusIndex: state.workflow.statuses.length - 1 };
     logEvent('edit', `Added status new-status-${nextIndex}`);
     persistState();
@@ -1167,6 +1373,7 @@
     const copy = normalizeStatus({
       name: `${current.name}-copy`,
       description: current.description,
+      prompt: current.prompt,
     });
     state.workflow.statuses.splice(state.selected.statusIndex + 1, 0, copy);
     state.selected = { kind: 'status', statusIndex: state.selected.statusIndex + 1 };
@@ -1284,6 +1491,9 @@
       state.selected = statusCount() ? { kind: 'status', statusIndex: 0 } : null;
       localStorage.removeItem(STORAGE_KEY);
       state.draftLoaded = false;
+      testerState = freshTesterState();
+      exportState = { title: '', text: '', filename: '', mode: 'export' };
+      debugEvents = [];
       logEvent('load', `Reloaded workflow from server file source: ${state.serverSource}`);
       showToast('Reloaded project workflow from server', false);
       render();
@@ -1311,6 +1521,97 @@
     } catch (error) {
       logEvent('error', `Save failed: ${error.message}`);
       showToast(error.message, true);
+    }
+  }
+
+  async function runPreview() {
+    const slug = document.getElementById('tester-slug-input')?.value.trim() || testerState.slug;
+    const transitionValue = document.getElementById('tester-transition-select')?.value || '';
+    const to = transitionValue.split('|')[1] || testerState.to;
+    testerState.slug = slug;
+    testerState.to = to;
+    testerState.transition = transitionValue;
+    testerState.error = '';
+    testerState.result = null;
+    if (!slug || !to) {
+      testerState.error = 'Pick both an issue slug and target transition.';
+      renderTester();
+      return;
+    }
+    testerState.loading = true;
+    renderTester();
+    try {
+      const response = await fetch(PREVIEW_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug, to }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `Preview failed with ${response.status}`);
+      testerState.result = payload;
+      logEvent('preview', `Previewed ${slug} -> ${to}`);
+    } catch (error) {
+      testerState.error = error.message;
+      logEvent('error', `Preview failed: ${error.message}`);
+    } finally {
+      testerState.loading = false;
+      renderTester();
+      renderDebug();
+    }
+  }
+
+  async function runViabilityCheck() {
+    const transitionValue = document.getElementById('tester-transition-select')?.value || testerState.transition;
+    const parts = transitionValue.split('|');
+    const to = parts[1] || testerState.to;
+    testerState.transition = transitionValue;
+    testerState.to = to;
+    testerState.error = '';
+    testerState.viability = [];
+    const candidates = candidateIssues();
+    if (!to) {
+      testerState.error = 'Pick a target transition first.';
+      renderTester();
+      return;
+    }
+    if (!candidates.length) {
+      testerState.error = `No candidate issues found for ${parts[0] || 'this transition'}.`;
+      renderTester();
+      return;
+    }
+    testerState.viabilityLoading = true;
+    renderTester();
+    try {
+      const results = await Promise.all(candidates.map(async issue => {
+        const response = await fetch(PREVIEW_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ slug: issue.slug, to }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          return { slug: issue.slug, allowed: false, reason: payload.error || `preview failed with ${response.status}` };
+        }
+        const preview = payload.preview || {};
+        return {
+          slug: issue.slug,
+          allowed: !!preview.allowed,
+          reason: preview.allowed ? '' : (preview.validation_error || 'blocked'),
+        };
+      }));
+      testerState.viability = results;
+      logEvent('preview', `Checked viability for ${results.length} candidate issues toward ${to}`);
+      const firstReady = results.find(item => item.allowed);
+      if (testerState.viableOnly && firstReady && (!testerState.slug || !results.some(item => item.slug === testerState.slug && item.allowed))) {
+        testerState.slug = firstReady.slug;
+      }
+    } catch (error) {
+      testerState.error = error.message;
+      logEvent('error', `Viability check failed: ${error.message}`);
+    } finally {
+      testerState.viabilityLoading = false;
+      renderTester();
+      renderDebug();
     }
   }
 
@@ -1356,6 +1657,7 @@
       const nextName = document.getElementById('status-name-input')?.value.trim() || status.name;
       status.name = nextName;
       status.description = document.getElementById('status-description-input')?.value.trim() || '';
+      status.prompt = document.getElementById('status-prompt-input')?.value.replace(/\r/g, '').trim() || '';
       if (nextName !== oldName) {
         state.workflow.transitions.forEach(transition => {
           if (transition.from === oldName) transition.from = nextName;
@@ -1463,6 +1765,42 @@
       const systemButton = event.target.closest('[data-select-system]');
       if (systemButton) {
         focusTransition(systemButton.getAttribute('data-select-system'));
+      }
+    });
+
+    document.getElementById('tester-root').addEventListener('click', event => {
+      if (event.target.closest('#run-preview-btn')) {
+        runPreview();
+        return;
+      }
+      if (event.target.closest('#run-viability-btn')) {
+        runViabilityCheck();
+        return;
+      }
+      if (event.target.closest('#toggle-viable-btn')) {
+        testerState.viableOnly = !testerState.viableOnly;
+        const visible = visibleTesterIssues();
+        if (testerState.viableOnly && visible.length && !visible.some(issue => issue.slug === testerState.slug)) {
+          testerState.slug = visible[0].slug;
+        }
+        renderTester();
+      }
+    });
+
+    document.getElementById('tester-root').addEventListener('change', event => {
+      if (event.target.id === 'tester-slug-input') {
+        testerState.slug = event.target.value.trim();
+      }
+      if (event.target.id === 'tester-transition-select') {
+        testerState.transition = event.target.value;
+        testerState.to = (event.target.value.split('|')[1] || '').trim();
+        testerState.viability = [];
+        testerState.viableOnly = false;
+        const visible = visibleTesterIssues();
+        if (visible.length && !visible.some(issue => issue.slug === testerState.slug)) {
+          testerState.slug = visible[0].slug;
+        }
+        renderTester();
       }
     });
 

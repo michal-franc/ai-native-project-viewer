@@ -30,8 +30,13 @@
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 1h5v2H3v10h4v2H1V1zm9 0h5v14H8v-2h4V3H10V1zM5 5h2v1H5V5zm0 2h2v1H5V7zm0 2h2v1H5V9z"/></svg>
                     Docs
                 </a>
+                <a href="{{.Prefix}}/workflow-designer" class="view-tab">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2.5 3.25A1.25 1.25 0 013.75 2h2.5A1.25 1.25 0 017.5 3.25v2.5A1.25 1.25 0 016.25 7h-2.5A1.25 1.25 0 012.5 5.75v-2.5zm6 0A1.25 1.25 0 019.75 2h2.5a1.25 1.25 0 011.25 1.25v2.5A1.25 1.25 0 0112.25 7h-2.5A1.25 1.25 0 018.5 5.75v-2.5zm-6 6A1.25 1.25 0 013.75 8h2.5A1.25 1.25 0 017.5 9.25v2.5A1.25 1.25 0 016.25 13h-2.5a1.25 1.25 0 01-1.25-1.25v-2.5zm9.25.75a.75.75 0 010 1.5H10v1.75a.75.75 0 01-1.5 0V11.5H6.75a.75.75 0 010-1.5H8.5V8.25a.75.75 0 011.5 0V10h1.75z"/></svg>
+                    Workflow
+                </a>
             </nav>
             <div class="theme-picker">
+                <div class="agent-activity-summary" id="project-active-bots" data-count="{{.ActiveBots}}">{{.ActiveBots}} active bot{{if ne .ActiveBots 1}}s{{end}}</div>
                 <button class="theme-btn" data-theme="dark" title="Dark"></button>
                 <button class="theme-btn" data-theme="dracula" title="Dracula"></button>
                 <button class="theme-btn" data-theme="light" title="Light"></button>
@@ -96,6 +101,9 @@
                     <div class="issue-title-row">
                         <a href="{{$.Prefix}}/issue/{{.Slug}}" class="issue-title">{{.Title}}</a>
                         <span class="badge" style="background:{{statusColor .Status}};color:{{statusTextColor .Status}}">{{.Status}}</span>
+                        {{if .HasActiveAgent}}
+                        <span class="agent-active-chip">{{len .ActiveSessions}} agent active{{if ne (len .ActiveSessions) 1}}s{{end}}</span>
+                        {{end}}
                         {{if .Priority}}
                         <span style="display:flex;align-items:center;gap:2px;">
                             <span class="priority-dot" style="background:{{priorityColor .Priority}}"></span>
