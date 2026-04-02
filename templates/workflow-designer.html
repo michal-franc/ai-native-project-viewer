@@ -720,6 +720,173 @@
             border-radius: 6px;
         }
 
+        .workflow-canvas-flow {
+            padding: 24px;
+            min-width: max-content;
+        }
+
+        .workflow-lane-section + .workflow-lane-section,
+        .workflow-overlays {
+            margin-top: 24px;
+        }
+
+        .workflow-linear {
+            display: flex;
+            align-items: stretch;
+            gap: 18px;
+        }
+
+        .status-card-linear,
+        .status-spacer,
+        .transition-stack {
+            width: 250px;
+            flex: 0 0 250px;
+        }
+
+        .status-card-linear {
+            text-align: left;
+            border: 1px solid rgba(96, 165, 250, 0.28);
+            background: linear-gradient(180deg, rgba(59, 130, 246, 0.94), rgba(37, 99, 235, 0.92));
+            color: #fff;
+            border-radius: 18px;
+            padding: 16px;
+            box-shadow: 0 18px 28px rgba(0, 0, 0, 0.18);
+            cursor: pointer;
+        }
+
+        .status-card-linear.selected {
+            box-shadow: 0 0 0 3px rgba(147, 197, 253, 0.55), 0 18px 28px rgba(0, 0, 0, 0.18);
+        }
+
+        .status-card-kicker,
+        .transition-stack-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            opacity: 0.74;
+            margin-bottom: 6px;
+            font-weight: 700;
+        }
+
+        .status-card-title,
+        .transition-stack-title,
+        .overlay-group-title {
+            font-size: 18px;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+
+        .status-card-desc {
+            margin-top: 12px;
+            font-size: 13px;
+            line-height: 1.5;
+            color: rgba(255, 255, 255, 0.92);
+        }
+
+        .transition-stack {
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            background: linear-gradient(180deg, color-mix(in srgb, var(--bg-secondary) 92%, #ffffff 8%), var(--bg-secondary));
+            box-shadow: 0 16px 26px rgba(0, 0, 0, 0.14);
+            padding: 14px;
+            text-align: left;
+            cursor: pointer;
+        }
+
+        .transition-stack.selected {
+            border-color: #60a5fa;
+            box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.22), 0 16px 26px rgba(0, 0, 0, 0.14);
+        }
+
+        .transition-stack-header,
+        .overlay-group-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .transition-add-btn {
+            padding: 6px 9px;
+            border-radius: 9px;
+            flex-shrink: 0;
+        }
+
+        .transition-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .transition-empty {
+            border: 1px dashed var(--border);
+            border-radius: 12px;
+            padding: 12px;
+            color: var(--text-secondary);
+            font-size: 12px;
+            line-height: 1.5;
+            background: color-mix(in srgb, var(--bg) 84%, #ffffff 16%);
+        }
+
+        .action-block {
+            width: 100%;
+            border: 1px solid var(--border);
+            background: color-mix(in srgb, var(--bg) 86%, #ffffff 14%);
+            color: var(--text);
+            border-radius: 14px;
+            padding: 11px 12px;
+            text-align: left;
+            cursor: pointer;
+        }
+
+        .action-block.selected {
+            border-color: #60a5fa;
+            box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.18);
+        }
+
+        .action-block-title {
+            margin-top: 8px;
+            font-size: 12px;
+            line-height: 1.45;
+        }
+
+        .workflow-overlays {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .overlay-group {
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            background: color-mix(in srgb, var(--bg-secondary) 92%, #ffffff 8%);
+            padding: 16px;
+        }
+
+        .overlay-group-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .status-spacer {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px dashed var(--border);
+            border-radius: 18px;
+            color: var(--text-secondary);
+            background: color-mix(in srgb, var(--bg) 88%, #ffffff 12%);
+            min-height: 92px;
+            padding: 12px;
+        }
+
+        .status-spacer-title {
+            font-size: 13px;
+            font-weight: 700;
+            text-align: center;
+        }
+
         @media (max-width: 1100px) {
             .designer-layout {
                 grid-template-columns: 1fr;
@@ -788,11 +955,11 @@
         <div class="designer-hero">
             <div>
                 <h2 class="designer-title">Workflow Designer</h2>
-                <p class="designer-subtitle">A YAML-first workflow editor. Statuses define the lifecycle, action nodes define what happens between statuses, and the graph round-trips back to real workflow YAML.</p>
+                <p class="designer-subtitle">A YAML-first workflow editor. Statuses define the ordered lifecycle, and each adjacent transition owns an ordered list of validations, prompts, append rules, approvals, and field updates.</p>
                 <div class="designer-badges">
                     <span class="designer-badge">Source: <strong id="workflow-source-badge">{{.WorkflowSource}}</strong></span>
                     <span class="designer-badge">Save target: <strong id="workflow-target-badge">{{.WorkflowTarget}}</strong></span>
-                    <span class="designer-badge" id="status-count-badge">0 status blocks</span>
+                    <span class="designer-badge" id="status-count-badge">0 statuses / 0 transitions / 0 actions</span>
                     <span class="designer-badge" id="draft-badge">Draft autosaved locally</span>
                 </div>
             </div>
@@ -810,16 +977,16 @@
                 <div class="designer-panel-header">
                     <div>
                         <div class="designer-panel-title">Workflow Builder</div>
-                        <div class="designer-panel-subtitle">Statuses, actions, and starters</div>
+                        <div class="designer-panel-subtitle">Action blocks and subsystem overlays</div>
                     </div>
                 </div>
                 <div class="designer-scroll">
                     <div class="palette-group">
-                        <div class="palette-heading">Nodes</div>
+                        <div class="palette-heading">Transition Actions</div>
                         <div id="palette-root"></div>
                     </div>
                     <div class="starter-group">
-                        <div class="starter-heading">Flow Starters</div>
+                        <div class="starter-heading">Subsystem Overlays</div>
                         <div id="starter-root"></div>
                     </div>
                     <div class="readiness-group">
@@ -836,36 +1003,23 @@
             <section class="designer-panel canvas-panel">
                 <div class="canvas-toolbar">
                     <button class="designer-btn primary" id="add-status-btn">+ Status</button>
-                    <button class="designer-btn" id="connect-mode-btn">Connect Nodes</button>
-                    <button class="designer-btn" id="auto-layout-btn">Auto Layout</button>
+                    <button class="designer-btn" id="auto-layout-btn">Reset View</button>
                     <button class="designer-btn" id="focus-selection-btn">Focus Selected</button>
                     <button class="designer-btn" id="clear-local-btn">Clear Draft</button>
-                    <div class="canvas-toolbar-spacer"></div>
-                    <button class="designer-btn" id="zoom-out-btn">-</button>
-                    <span class="designer-btn zoom-readout" id="zoom-readout">100%</span>
-                    <button class="designer-btn" id="zoom-in-btn">+</button>
-                    <button class="designer-btn" id="zoom-reset-btn">Reset Zoom</button>
                 </div>
                 <div class="canvas-stage-wrap" id="canvas-wrap">
                     <div class="canvas-stage" id="canvas-stage">
                         <div class="canvas-scene" id="canvas-scene">
                             <svg class="workflow-edge-layer" id="edge-layer"></svg>
                             <div class="canvas-empty" id="canvas-empty" style="display:none">
-                                Start with a status block or insert one of the flow starters. The current project workflow will also load here automatically when a local draft is not present.
+                                Start with a status. Transition action stacks will appear automatically between adjacent statuses.
                             </div>
                         </div>
                         <div class="canvas-hint" id="canvas-hint">
                             <strong>Canvas controls</strong>
-                            Statuses define the lifecycle. Action nodes sit between statuses and become transition actions in YAML. Connect nodes in order to shape each path.
+                            Statuses are the primary lifecycle nodes. Each adjacent status pair owns one ordered transition stack, and subsystem overlays can add more actions on top.
                         </div>
                     </div>
-                </div>
-                <div class="minimap" id="minimap">
-                    <div class="minimap-header">
-                        <span>Minimap</span>
-                        <span id="minimap-scale">1.00x</span>
-                    </div>
-                    <div class="minimap-canvas" id="minimap-canvas"></div>
                 </div>
             </section>
 
@@ -873,7 +1027,7 @@
                 <div class="designer-panel-header">
                     <div>
                         <div class="designer-panel-title">Inspector</div>
-                        <div class="designer-panel-subtitle">Edit the selected status, action, or connection</div>
+                        <div class="designer-panel-subtitle">Edit the selected status, transition, or action</div>
                     </div>
                 </div>
                 <div class="designer-scroll" id="inspector-root"></div>

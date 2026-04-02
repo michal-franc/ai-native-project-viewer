@@ -7,18 +7,12 @@
   const SAVE_URL = location.pathname;
   const DATA_URL = location.pathname.replace(/\/workflow-designer$/, '/workflow-designer/data');
 
-  const NODE_TYPES = [
-    { type: 'status', icon: 'S', color: '#2563eb', title: 'Status', desc: 'Lifecycle status exported under `statuses:`.' },
-    { type: 'validate', icon: 'V', color: '#d97706', title: 'Validate', desc: 'Validation rule executed during a transition.' },
-    { type: 'append_section', icon: 'A', color: '#059669', title: 'Append Section', desc: 'Create or reuse a section and append content.' },
-    { type: 'inject_prompt', icon: 'P', color: '#ea580c', title: 'Inject Prompt', desc: 'Transition guidance shown to the next agent.' },
-    { type: 'approval', icon: 'H', color: '#db2777', title: 'Human Approval', desc: 'Require human approval before transition completion.' },
-    { type: 'set_fields', icon: 'F', color: '#7c3aed', title: 'Set Fields', desc: 'Update assignee, priority, approval, or other frontmatter.' },
-  ];
-
-  const STARTERS = [
-    { key: 'design-lifecycle', title: 'Workflow Skeleton', desc: 'Insert an idea-to-done status spine.' },
-    { key: 'qa-lifecycle', title: 'QA Spine', desc: 'Insert backlog through done with testing stages.' },
+  const ACTION_TYPES = [
+    { type: 'validate', title: 'Validate', color: '#d97706', desc: 'Run a configured validation rule before the transition completes.' },
+    { type: 'append_section', title: 'Append Section', color: '#059669', desc: 'Create or reuse a section and append markdown into it.' },
+    { type: 'inject_prompt', title: 'Inject Prompt', color: '#ea580c', desc: 'Add transition-specific guidance for the next agent.' },
+    { type: 'require_human_approval', title: 'Human Approval', color: '#db2777', desc: 'Block until the issue is approved for a target status.' },
+    { type: 'set_fields', title: 'Set Fields', color: '#7c3aed', desc: 'Update selected frontmatter fields during the transition.' },
   ];
 
   const VALIDATION_RULES = [
@@ -26,10 +20,10 @@
     { value: 'has_checkboxes', label: 'Has Checkboxes', description: 'Requires at least one checkbox anywhere in the issue body.' },
     { value: 'has_assignee', label: 'Has Assignee', description: 'Requires the issue to be claimed before the transition can continue.' },
     { value: 'all_checkboxes_checked', label: 'All Checkboxes Checked', description: 'Requires every checkbox in the issue body to be checked.' },
-    { value: 'section_checkboxes_checked', label: 'Section Checkboxes Checked', description: 'Requires all checkboxes in one named section to be checked.', argLabel: 'Section Name', argPlaceholder: 'Implementation' },
-    { value: 'has_test_plan', label: 'Has Test Plan', description: 'Requires a `## Test Plan` section with both `### Automated` and `### Manual` subsections.' },
-    { value: 'has_comment_prefix', label: 'Has Comment Prefix', description: 'Requires at least one comment starting with a specific prefix.', argLabel: 'Comment Prefix', argPlaceholder: 'tests:' },
-    { value: 'approved_for', label: 'Approved For', description: 'Requires the issue frontmatter approval field to match a target status.', argLabel: 'Approved Status', argPlaceholder: 'backlog' },
+    { value: 'section_checkboxes_checked', label: 'Section Checkboxes Checked', description: 'Requires all checkboxes inside one named section to be checked.', argLabel: 'Section Name', argPlaceholder: 'Implementation' },
+    { value: 'has_test_plan', label: 'Has Test Plan', description: 'Requires a `## Test Plan` section with `### Automated` and `### Manual` subsections.' },
+    { value: 'has_comment_prefix', label: 'Has Comment Prefix', description: 'Requires at least one issue comment starting with a specific prefix.', argLabel: 'Comment Prefix', argPlaceholder: 'tests:' },
+    { value: 'approved_for', label: 'Approved For', description: 'Requires the issue approval metadata to match a target status.', argLabel: 'Approved Status', argPlaceholder: 'backlog' },
   ];
 
   const SET_FIELD_OPTIONS = [
@@ -39,34 +33,19 @@
     { value: 'status', label: 'Status', description: 'Override the resulting issue status.' },
   ];
 
+  const EMPTY_WORKFLOW = normalizeWorkflow(INITIAL_WORKFLOW);
+
   let state = {
-    nodes: [],
-    edges: [],
-    systems: {},
-    selectedId: null,
-    selectedEdgeId: null,
-    connectFrom: null,
-    drag: null,
-    connectDrag: null,
-    pan: null,
-    zoom: 1,
+    workflow: EMPTY_WORKFLOW,
+    selected: null,
+    draftLoaded: false,
+    serverSource: document.getElementById('workflow-source-badge')?.textContent || 'built-in default workflow',
+    serverTarget: document.getElementById('workflow-target-badge')?.textContent || 'workflow.yaml',
   };
 
   let exportState = { title: '', text: '', filename: '', mode: 'export' };
   let debugEvents = [];
-
-  function makeId(prefix) {
-    return prefix + '-' + Math.random().toString(36).slice(2, 9);
-  }
-
-  function logEvent(kind, message) {
-    debugEvents.unshift({
-      kind,
-      message,
-      at: new Date().toISOString(),
-    });
-    debugEvents = debugEvents.slice(0, 8);
-  }
+  let toastTimer = null;
 
   function countIndent(line) {
     const match = line.match(/^ */);
@@ -97,14 +76,6 @@
     return escapeHTML(value).replace(/'/g, '&#39;');
   }
 
-  function typeMeta(type) {
-    return NODE_TYPES.find(item => item.type === type) || NODE_TYPES[0];
-  }
-
-  function colorForType(type) {
-    return typeMeta(type).color;
-  }
-
   function normalizeStatus(raw) {
     return {
       name: String(raw?.name ?? raw?.Name ?? '').trim(),
@@ -125,12 +96,42 @@
     };
   }
 
+  function normalizeTransition(raw) {
+    return {
+      from: String(raw?.from ?? raw?.From ?? '').trim(),
+      to: String(raw?.to ?? raw?.To ?? '').trim(),
+      actions: (raw?.actions ?? raw?.Actions ?? []).map(normalizeAction).filter(action => action.type),
+    };
+  }
+
+  function normalizeSystems(raw) {
+    const out = {};
+    Object.keys(raw || {}).forEach(name => {
+      const overlay = raw[name] || {};
+      out[name] = {
+        statuses: (overlay.statuses ?? overlay.Statuses ?? []).map(normalizeStatus).filter(status => status.name),
+        transitions: (overlay.transitions ?? overlay.Transitions ?? []).map(normalizeTransition).filter(transition => transition.from && transition.to),
+      };
+    });
+    return out;
+  }
+
+  function normalizeWorkflow(raw) {
+    return {
+      statuses: (raw?.statuses ?? raw?.Statuses ?? []).map(normalizeStatus).filter(status => status.name),
+      transitions: (raw?.transitions ?? raw?.Transitions ?? []).map(normalizeTransition).filter(transition => transition.from && transition.to),
+      systems: normalizeSystems(raw?.systems ?? raw?.Systems),
+    };
+  }
+
+  function cloneWorkflow(workflow) {
+    return normalizeWorkflow(JSON.parse(JSON.stringify(workflow || EMPTY_WORKFLOW)));
+  }
+
   function parseValidationRule(rule) {
     const normalized = String(rule || '').trim();
     const idx = normalized.indexOf(': ');
-    if (idx === -1) {
-      return { type: normalized, arg: '' };
-    }
+    if (idx === -1) return { type: normalized, arg: '' };
     return { type: normalized.slice(0, idx), arg: normalized.slice(idx + 2) };
   }
 
@@ -160,398 +161,26 @@
     return SET_FIELD_OPTIONS.find(item => item.value === String(field || '').trim()) || null;
   }
 
-  function normalizeTransition(raw) {
-    return {
-      from: String(raw?.from ?? raw?.From ?? '').trim(),
-      to: String(raw?.to ?? raw?.To ?? '').trim(),
-      actions: (raw?.actions ?? raw?.Actions ?? []).map(normalizeAction).filter(action => action.type),
-    };
+  function actionMeta(type) {
+    return ACTION_TYPES.find(item => item.type === type) || ACTION_TYPES[0];
   }
 
-  function normalizeSystems(raw) {
-    const out = {};
-    const source = raw || {};
-    Object.keys(source).forEach(name => {
-      const overlay = source[name] || {};
-      out[name] = {
-        statuses: (overlay.statuses ?? overlay.Statuses ?? []).map(normalizeStatus).filter(status => status.name),
-        transitions: (overlay.transitions ?? overlay.Transitions ?? []).map(normalizeTransition).filter(transition => transition.from && transition.to),
-      };
-    });
-    return out;
-  }
-
-  function normalizeWorkflow(raw) {
-    return {
-      statuses: (raw?.statuses ?? raw?.Statuses ?? []).map(normalizeStatus).filter(status => status.name),
-      transitions: (raw?.transitions ?? raw?.Transitions ?? []).map(normalizeTransition).filter(transition => transition.from && transition.to),
-      systems: normalizeSystems(raw?.systems ?? raw?.Systems),
-    };
-  }
-
-  function actionNodeType(actionType) {
-    return actionType === 'require_human_approval' ? 'approval' : actionType;
-  }
-
-  function normalizeNode(raw) {
-    const node = {
-      id: raw?.id || makeId(raw?.type || 'node'),
-      type: String(raw?.type || 'status'),
-      x: Number(raw?.x) || 120,
-      y: Number(raw?.y) || 120,
-      title: String(raw?.title || '').trim(),
-      description: String(raw?.description || ''),
-      rule: String(raw?.rule || ''),
-      status: String(raw?.status || ''),
-      titleText: String(raw?.titleText || ''),
-      body: String(raw?.body || ''),
-      prompt: String(raw?.prompt || ''),
-      field: String(raw?.field || ''),
-      value: String(raw?.value || ''),
-    };
-    if (!node.title) {
-      node.title = node.type === 'status' ? 'new-status' : typeMeta(node.type).title;
-    }
-    return node;
-  }
-
-  function normalizeEdge(raw) {
-    return {
-      id: raw?.id || makeId('edge'),
-      from: String(raw?.from || ''),
-      to: String(raw?.to || ''),
-    };
-  }
-
-  function actionFromNode(node) {
-    switch (node.type) {
-      case 'validate':
-        return normalizeAction({ type: 'validate', rule: node.rule });
-      case 'append_section':
-        return normalizeAction({ type: 'append_section', title: node.titleText, body: node.body });
-      case 'inject_prompt':
-        return normalizeAction({ type: 'inject_prompt', prompt: node.prompt });
-      case 'approval':
-        return normalizeAction({ type: 'require_human_approval', status: node.status });
-      case 'set_fields':
-        return normalizeAction({ type: 'set_fields', field: node.field, value: node.value });
-      default:
-        return normalizeAction({ type: '' });
-    }
-  }
-
-  function applyActionToNode(node, action) {
+  function actionSummary(action) {
     const normalized = normalizeAction(action);
-    node.rule = normalized.rule;
-    node.status = normalized.status;
-    node.titleText = normalized.title;
-    node.body = normalized.body;
-    node.prompt = normalized.prompt;
-    node.field = normalized.field;
-    node.value = normalized.value;
-    return node;
-  }
-
-  function nodeSummary(node) {
-    switch (node.type) {
-      case 'status':
-        return node.description || 'Workflow lifecycle status';
+    switch (normalized.type) {
       case 'validate':
-        return validationRuleSummary(node.rule);
+        return validationRuleSummary(normalized.rule);
       case 'append_section':
-        return node.titleText ? `Append ${node.titleText}` : 'Append or create a section';
+        return normalized.title ? `Append ${normalized.title}` : 'Append section content';
       case 'inject_prompt':
-        return node.prompt || 'Transition guidance';
-      case 'approval':
-        return node.status ? `Requires approval for ${node.status}` : 'Requires human approval';
+        return normalized.prompt ? normalized.prompt.split('\n')[0].slice(0, 72) : 'Injected guidance';
+      case 'require_human_approval':
+        return normalized.status ? `Requires approval for ${normalized.status}` : 'Requires human approval';
       case 'set_fields':
-        return node.field ? `${(setFieldMeta(node.field)?.label || node.field)} = ${node.value || '""'}` : 'Set issue frontmatter';
+        return normalized.field ? `${normalized.field} = ${normalized.value || '""'}` : 'Set frontmatter field';
       default:
-        return 'Workflow node';
+        return normalized.type || 'Action';
     }
-  }
-
-  function statusNodesInOrder() {
-    return state.nodes.filter(node => node.type === 'status').slice().sort((a, b) => (a.x - b.x) || (a.y - b.y));
-  }
-
-  function workflowToDraft(workflow) {
-    const normalized = normalizeWorkflow(workflow);
-    const nodes = [];
-    const edges = [];
-    const byName = new Map();
-
-    normalized.statuses.forEach((status, index) => {
-      const node = normalizeNode({
-        id: makeId('status'),
-        type: 'status',
-        x: 120 + index * 280,
-        y: 150 + (index % 2) * 12,
-        title: status.name,
-        description: status.description,
-      });
-      nodes.push(node);
-      byName.set(status.name, node);
-    });
-
-    normalized.transitions.forEach((transition, transitionIndex) => {
-      const fromNode = byName.get(transition.from);
-      const toNode = byName.get(transition.to);
-      if (!fromNode || !toNode) return;
-
-      let previous = fromNode;
-      const span = Math.max(180, toNode.x - fromNode.x);
-      const count = Math.max(transition.actions.length, 1);
-      transition.actions.forEach((action, actionIndex) => {
-        const node = applyActionToNode(normalizeNode({
-          id: makeId(actionNodeType(action.type)),
-          type: actionNodeType(action.type),
-          x: fromNode.x + ((actionIndex + 1) * span) / (count + 1),
-          y: 360 + (transitionIndex % 3) * 110,
-        }), action);
-        nodes.push(node);
-        edges.push(normalizeEdge({ id: makeId('edge'), from: previous.id, to: node.id }));
-        previous = node;
-      });
-      edges.push(normalizeEdge({ id: makeId('edge'), from: previous.id, to: toNode.id }));
-    });
-
-    return { nodes, edges, systems: normalized.systems };
-  }
-
-  function loadState() {
-    const initial = workflowToDraft(INITIAL_WORKFLOW);
-    state.nodes = initial.nodes;
-    state.edges = initial.edges;
-    state.systems = initial.systems;
-    state.zoom = 1;
-    state.selectedId = state.nodes[0]?.id || null;
-    state.selectedEdgeId = null;
-    state.connectFrom = null;
-    state.connectDrag = null;
-    state.pan = null;
-
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (!saved) {
-        logEvent('load', 'Loaded workflow from server snapshot');
-        return;
-      }
-      const parsed = JSON.parse(saved);
-      if (parsed.version !== 3) {
-        logEvent('warn', `Ignored local draft with unsupported version ${parsed.version ?? 'unknown'}`);
-        return;
-      }
-      state.nodes = Array.isArray(parsed.nodes) ? parsed.nodes.map(normalizeNode) : state.nodes;
-      state.edges = Array.isArray(parsed.edges) ? parsed.edges.map(normalizeEdge) : state.edges;
-      state.systems = normalizeSystems(parsed.systems || state.systems);
-      state.zoom = Number(parsed.zoom) || 1;
-      state.selectedId = state.nodes[0]?.id || null;
-      logEvent('load', `Loaded local draft with ${state.nodes.filter(node => node.type === 'status').length} statuses and ${state.edges.length} edges`);
-    } catch (error) {
-      logEvent('error', `Failed to parse local draft: ${error.message}`);
-    }
-  }
-
-  function persistState() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      version: 3,
-      nodes: state.nodes,
-      edges: state.edges,
-      systems: state.systems,
-      zoom: state.zoom,
-    }));
-  }
-
-  function findNode(id) {
-    return state.nodes.find(node => node.id === id);
-  }
-
-  function findEdge(id) {
-    return state.edges.find(edge => edge.id === id);
-  }
-
-  function outgoingEdges(nodeId) {
-    return state.edges.filter(edge => edge.from === nodeId);
-  }
-
-  function incomingEdges(nodeId) {
-    return state.edges.filter(edge => edge.to === nodeId);
-  }
-
-  function pointerToCanvas(event) {
-    const wrap = document.getElementById('canvas-wrap');
-    const rect = wrap.getBoundingClientRect();
-    return {
-      x: (event.clientX - rect.left + wrap.scrollLeft) / state.zoom,
-      y: (event.clientY - rect.top + wrap.scrollTop) / state.zoom,
-    };
-  }
-
-  function pointToViewportFromMinimap(localX, localY, scale, minX, minY, offsetX, offsetY) {
-    return {
-      sceneX: ((localX - offsetX) / scale) + minX - 20,
-      sceneY: ((localY - offsetY) / scale) + minY - 20,
-    };
-  }
-
-  function addNode(type, position) {
-    const node = normalizeNode({
-      id: makeId(type),
-      type,
-      x: position?.x ?? 160 + state.nodes.length * 28,
-      y: position?.y ?? (type === 'status' ? 160 : 360 + (state.nodes.length % 3) * 110),
-    });
-    state.nodes.push(node);
-    state.selectedId = node.id;
-    state.selectedEdgeId = null;
-    persistState();
-    render();
-  }
-
-  function insertStarter(key) {
-    const names = key === 'qa-lifecycle'
-      ? ['backlog', 'in progress', 'testing', 'human-testing', 'documentation', 'done']
-      : ['idea', 'in design', 'backlog', 'in progress', 'testing', 'human-testing', 'documentation', 'done'];
-    const anchorX = 120 + state.nodes.length * 18;
-    const anchorY = 150 + (state.nodes.length % 2) * 20;
-    const created = names.map((name, index) => normalizeNode({
-      id: makeId('status'),
-      type: 'status',
-      x: anchorX + index * 260,
-      y: anchorY + (index % 2) * 14,
-      title: name,
-    }));
-    state.nodes.push(...created);
-    for (let i = 0; i < created.length - 1; i++) {
-      state.edges.push(normalizeEdge({ id: makeId('edge'), from: created[i].id, to: created[i + 1].id }));
-    }
-    state.selectedId = created[0]?.id || null;
-    state.selectedEdgeId = null;
-    persistState();
-    render();
-  }
-
-  function deleteNode(id) {
-    state.nodes = state.nodes.filter(node => node.id !== id);
-    state.edges = state.edges.filter(edge => edge.from !== id && edge.to !== id);
-    if (state.selectedId === id) state.selectedId = state.nodes[0]?.id || null;
-    if (state.selectedEdgeId && !findEdge(state.selectedEdgeId)) state.selectedEdgeId = null;
-    if (state.connectFrom === id) state.connectFrom = null;
-    persistState();
-    render();
-  }
-
-  function deleteEdge(id) {
-    state.edges = state.edges.filter(edge => edge.id !== id);
-    if (state.selectedEdgeId === id) state.selectedEdgeId = null;
-    persistState();
-    render();
-  }
-
-  function toggleConnection(fromId, toId) {
-    if (!fromId || !toId || fromId === toId) return;
-    const existing = state.edges.find(edge => edge.from === fromId && edge.to === toId);
-    if (existing) {
-      state.selectedEdgeId = existing.id;
-      state.selectedId = null;
-      state.connectFrom = null;
-      render();
-      return;
-    }
-    state.edges.push(normalizeEdge({ id: makeId('edge'), from: fromId, to: toId }));
-    state.selectedEdgeId = state.edges[state.edges.length - 1].id;
-    state.selectedId = null;
-    state.connectFrom = null;
-    persistState();
-    render();
-  }
-
-  function collectTransitions() {
-    const statuses = statusNodesInOrder();
-    const transitions = [];
-    const seen = new Set();
-
-    function visit(startNode, currentId, actions, visited) {
-      outgoingEdges(currentId).forEach(edge => {
-        const next = findNode(edge.to);
-        if (!next || visited.has(next.id)) return;
-        if (next.type === 'status') {
-          if (next.id === startNode.id) return;
-          const transition = {
-            from: startNode.title.trim(),
-            to: next.title.trim(),
-            actions: actions.map(normalizeAction),
-          };
-          const key = JSON.stringify(transition);
-          if (!seen.has(key)) {
-            seen.add(key);
-            transitions.push(transition);
-          }
-          return;
-        }
-        visit(startNode, next.id, actions.concat([actionFromNode(next)]), new Set([...visited, next.id]));
-      });
-    }
-
-    statuses.forEach(status => visit(status, status.id, [], new Set([status.id])));
-    return transitions.sort((a, b) => {
-      const aFrom = statuses.findIndex(status => status.title.trim() === a.from);
-      const bFrom = statuses.findIndex(status => status.title.trim() === b.from);
-      if (aFrom !== bFrom) return aFrom - bFrom;
-      return a.to.localeCompare(b.to);
-    });
-  }
-
-  function collectTransitionPaths() {
-    const statuses = statusNodesInOrder();
-    const paths = [];
-    const seen = new Set();
-
-    function visit(startNode, currentId, actionNodeIds, visited) {
-      outgoingEdges(currentId).forEach(edge => {
-        const next = findNode(edge.to);
-        if (!next || visited.has(next.id)) return;
-        if (next.type === 'status') {
-          if (next.id === startNode.id) return;
-          const path = {
-            fromId: startNode.id,
-            toId: next.id,
-            from: startNode.title.trim(),
-            to: next.title.trim(),
-            actionNodeIds: actionNodeIds.slice(),
-          };
-          const key = JSON.stringify(path);
-          if (!seen.has(key)) {
-            seen.add(key);
-            paths.push(path);
-          }
-          return;
-        }
-        visit(startNode, next.id, actionNodeIds.concat([next.id]), new Set([...visited, next.id]));
-      });
-    }
-
-    statuses.forEach(status => visit(status, status.id, [], new Set([status.id])));
-    return paths.sort((a, b) => {
-      const aFrom = statuses.findIndex(status => status.id === a.fromId);
-      const bFrom = statuses.findIndex(status => status.id === b.fromId);
-      if (aFrom !== bFrom) return aFrom - bFrom;
-      const aTo = statuses.findIndex(status => status.id === a.toId);
-      const bTo = statuses.findIndex(status => status.id === b.toId);
-      return aTo - bTo;
-    });
-  }
-
-  function draftToWorkflow() {
-    return {
-      statuses: statusNodesInOrder().map(node => ({
-        name: node.title.trim(),
-        description: node.description.trim(),
-      })).filter(status => status.name),
-      transitions: collectTransitions(),
-      systems: state.systems,
-    };
   }
 
   function emitBlock(lines, indent, key, value) {
@@ -570,11 +199,12 @@
     if (normalized.body) emitBlock(lines, `${indent}  `, 'body', normalized.body);
     if (normalized.prompt) emitBlock(lines, `${indent}  `, 'prompt', normalized.prompt);
     if (normalized.field) lines.push(`${indent}  field: ${yamlQuote(normalized.field)}`);
-    if (normalized.value) lines.push(`${indent}  value: ${yamlQuote(normalized.value)}`);
+    if (normalized.value !== '') lines.push(`${indent}  value: ${yamlQuote(normalized.value)}`);
+    if (normalized.value === '' && normalized.type === 'set_fields') lines.push(`${indent}  value: ""`);
   }
 
   function workflowToYAML(workflow) {
-    const normalized = normalizeWorkflow(workflow);
+    const normalized = simplifyWorkflow(workflow);
     const lines = ['statuses:'];
     normalized.statuses.forEach(status => {
       lines.push(`  - name: ${yamlQuote(status.name)}`);
@@ -583,16 +213,20 @@
 
     lines.push('');
     lines.push('transitions:');
-    normalized.transitions.forEach(transition => {
-      lines.push(`  - from: ${yamlQuote(transition.from)}`);
-      lines.push(`    to: ${yamlQuote(transition.to)}`);
-      lines.push('    actions:');
-      if (!transition.actions.length) {
-        lines.push('      []');
-      } else {
-        transition.actions.forEach(action => emitAction(lines, '      ', action));
-      }
-    });
+    if (!normalized.transitions.length) {
+      lines.push('  []');
+    } else {
+      normalized.transitions.forEach(transition => {
+        lines.push(`  - from: ${yamlQuote(transition.from)}`);
+        lines.push(`    to: ${yamlQuote(transition.to)}`);
+        lines.push('    actions:');
+        if (!transition.actions.length) {
+          lines.push('      []');
+        } else {
+          transition.actions.forEach(action => emitAction(lines, '      ', action));
+        }
+      });
+    }
 
     const systemNames = Object.keys(normalized.systems || {});
     if (systemNames.length) {
@@ -663,7 +297,7 @@
           continue;
         }
         const block = innerTrimmed.match(/^([a-z_]+):\s*\|\s*$/);
-        const scalar = innerTrimmed.match(/^([a-z_]+):\s*(.+)$/);
+        const scalar = innerTrimmed.match(/^([a-z_]+):\s*(.*)$/);
         if (block) {
           const field = block[1];
           i++;
@@ -684,9 +318,7 @@
           action[field] = body.join('\n').replace(/\n+$/, '');
           continue;
         }
-        if (scalar) {
-          action[scalar[1]] = unquoteYAML(scalar[2]);
-        }
+        if (scalar) action[scalar[1]] = unquoteYAML(scalar[2]);
         i++;
       }
       actions.push(normalizeAction(action));
@@ -865,824 +497,1032 @@
     return normalizeWorkflow(workflow);
   }
 
-  function importDraft(text) {
-    const trimmed = text.trim();
+  function statusIndexMap(statuses) {
+    const map = new Map();
+    statuses.forEach((status, index) => {
+      map.set(status.name, index);
+    });
+    return map;
+  }
+
+  function isAdjacent(statuses, from, to) {
+    const index = statusIndexMap(statuses);
+    return index.has(from) && index.has(to) && index.get(to) === index.get(from) + 1;
+  }
+
+  function simplifyWorkflow(workflow) {
+    const normalized = cloneWorkflow(workflow);
+    normalized.transitions = normalized.transitions.filter(transition => isAdjacent(normalized.statuses, transition.from, transition.to));
+    Object.keys(normalized.systems).forEach(name => {
+      normalized.systems[name].transitions = (normalized.systems[name].transitions || []).filter(transition => isAdjacent(normalized.statuses, transition.from, transition.to));
+      normalized.systems[name].statuses = (normalized.systems[name].statuses || []).map(normalizeStatus).filter(status => status.name);
+    });
+    return normalized;
+  }
+
+  function transitionPairs() {
+    const out = [];
+    for (let i = 0; i < state.workflow.statuses.length - 1; i++) {
+      out.push({
+        from: state.workflow.statuses[i].name,
+        to: state.workflow.statuses[i + 1].name,
+        index: i,
+      });
+    }
+    return out;
+  }
+
+  function findTransition(list, from, to) {
+    return (list || []).find(transition => transition.from === from && transition.to === to) || null;
+  }
+
+  function ensureSystem(name) {
+    const trimmed = String(name || '').trim();
+    if (!trimmed) return null;
+    if (!state.workflow.systems[trimmed]) {
+      state.workflow.systems[trimmed] = { statuses: [], transitions: [] };
+    }
+    return state.workflow.systems[trimmed];
+  }
+
+  function ensureTransition(systemName, from, to) {
+    const list = systemName ? ensureSystem(systemName).transitions : state.workflow.transitions;
+    let transition = findTransition(list, from, to);
+    if (!transition) {
+      transition = normalizeTransition({ from, to, actions: [] });
+      list.push(transition);
+    }
+    return transition;
+  }
+
+  function pruneEmptyTransitions() {
+    state.workflow.transitions = state.workflow.transitions.filter(transition => transition.actions.length);
+    Object.keys(state.workflow.systems).forEach(name => {
+      state.workflow.systems[name].transitions = (state.workflow.systems[name].transitions || []).filter(transition => transition.actions.length);
+    });
+  }
+
+  function defaultAction(type, transition) {
+    switch (type) {
+      case 'validate':
+        return normalizeAction({ type, rule: VALIDATION_RULES[0].value });
+      case 'append_section':
+        return normalizeAction({ type, title: 'New Section', body: '- [ ] Describe what should be added here' });
+      case 'inject_prompt':
+        return normalizeAction({ type, prompt: `Guidance for ${transition.from} -> ${transition.to}` });
+      case 'require_human_approval':
+        return normalizeAction({ type, status: transition.to });
+      case 'set_fields':
+        return normalizeAction({ type, field: SET_FIELD_OPTIONS[0].value, value: '' });
+      default:
+        return normalizeAction({ type });
+    }
+  }
+
+  function statusCount() {
+    return state.workflow.statuses.length;
+  }
+
+  function baseTransitionCount() {
+    return transitionPairs().length;
+  }
+
+  function actionCount() {
+    let total = state.workflow.transitions.reduce((sum, transition) => sum + transition.actions.length, 0);
+    Object.keys(state.workflow.systems).forEach(name => {
+      total += (state.workflow.systems[name].transitions || []).reduce((sum, transition) => sum + transition.actions.length, 0);
+    });
+    return total;
+  }
+
+  function logEvent(kind, message) {
+    debugEvents.unshift({ kind, message, at: new Date().toISOString() });
+    debugEvents = debugEvents.slice(0, 10);
+  }
+
+  function showToast(message, isError) {
+    let toast = document.getElementById('designer-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.id = 'designer-toast';
+      toast.className = 'designer-toast';
+      document.body.appendChild(toast);
+    }
+    toast.textContent = message;
+    toast.className = 'designer-toast show' + (isError ? ' error' : '');
+    window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => {
+      toast.className = 'designer-toast' + (isError ? ' error' : '');
+    }, 2800);
+  }
+
+  function persistState() {
+    pruneEmptyTransitions();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      version: 3,
+      workflow: simplifyWorkflow(state.workflow),
+      selected: state.selected,
+    }));
+    state.draftLoaded = true;
+    updateBadges();
+  }
+
+  function loadState() {
+    state.workflow = simplifyWorkflow(EMPTY_WORKFLOW);
+    state.selected = statusCount() ? { kind: 'status', statusIndex: 0 } : null;
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      logEvent('load', 'Loaded workflow from server data embedded in the page');
+      return;
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed?.workflow) {
+        state.workflow = simplifyWorkflow(parsed.workflow);
+        state.selected = parsed.selected || state.selected;
+        state.draftLoaded = true;
+        logEvent('load', 'Loaded workflow draft from local browser storage');
+      }
+    } catch (error) {
+      logEvent('warn', `Failed to read local draft: ${error.message}`);
+    }
+    sanitizeSelection();
+  }
+
+  function clearLocalDraft() {
+    localStorage.removeItem(STORAGE_KEY);
+    state.draftLoaded = false;
+    logEvent('draft', 'Cleared local workflow draft');
+    showToast('Local draft cleared', false);
+    updateBadges();
+  }
+
+  function sanitizeSelection() {
+    const pairs = transitionPairs();
+    if (!state.selected) {
+      state.selected = statusCount() ? { kind: 'status', statusIndex: 0 } : null;
+      return;
+    }
+    if (state.selected.kind === 'status') {
+      if (state.selected.statusIndex < 0 || state.selected.statusIndex >= state.workflow.statuses.length) {
+        state.selected = statusCount() ? { kind: 'status', statusIndex: 0 } : null;
+      }
+      return;
+    }
+    const pair = pairs.find(item => item.from === state.selected.from && item.to === state.selected.to);
+    if (!pair) {
+      state.selected = statusCount() ? { kind: 'status', statusIndex: 0 } : null;
+      return;
+    }
+    const transition = getSelectedTransition(true);
+    if (!transition) {
+      state.selected = { kind: 'transition', system: state.selected.system || '', from: pair.from, to: pair.to };
+      return;
+    }
+    if (state.selected.kind === 'action') {
+      if (state.selected.actionIndex < 0 || state.selected.actionIndex >= transition.actions.length) {
+        state.selected = { kind: 'transition', system: state.selected.system || '', from: pair.from, to: pair.to };
+      }
+    }
+  }
+
+  function getSelectedTransition(allowEmpty) {
+    if (!state.selected || (state.selected.kind !== 'transition' && state.selected.kind !== 'action')) return null;
+    const systemName = state.selected.system || '';
+    const list = systemName ? ensureSystem(systemName).transitions : state.workflow.transitions;
+    const found = findTransition(list, state.selected.from, state.selected.to);
+    if (found || !allowEmpty) return found;
+    return normalizeTransition({ from: state.selected.from, to: state.selected.to, actions: [] });
+  }
+
+  function selectStatus(statusIndex) {
+    state.selected = { kind: 'status', statusIndex };
+    render();
+  }
+
+  function selectTransition(from, to, systemName) {
+    state.selected = { kind: 'transition', system: systemName || '', from, to };
+    render();
+  }
+
+  function selectAction(from, to, actionIndex, systemName) {
+    state.selected = { kind: 'action', system: systemName || '', from, to, actionIndex };
+    render();
+  }
+
+  function updateBadges() {
+    const countBadge = document.getElementById('status-count-badge');
+    if (countBadge) {
+      countBadge.textContent = `${statusCount()} statuses / ${baseTransitionCount()} transitions / ${actionCount()} actions`;
+    }
+    const draftBadge = document.getElementById('draft-badge');
+    if (draftBadge) {
+      draftBadge.textContent = state.draftLoaded ? 'Draft autosaved locally' : 'Using server workflow';
+    }
+  }
+
+  function readinessChecks() {
+    const items = [];
+    const names = state.workflow.statuses.map(status => status.name);
+    const duplicateNames = names.filter((name, index) => name && names.indexOf(name) !== index);
+    if (duplicateNames.length) {
+      items.push({ level: 'error', title: 'Duplicate statuses', desc: `Status names must be unique. Duplicates: ${duplicateNames.join(', ')}` });
+    }
+    const missingDescriptions = state.workflow.statuses.filter(status => !status.description).map(status => status.name);
+    if (missingDescriptions.length) {
+      items.push({ level: 'warn', title: 'Missing descriptions', desc: `Statuses without descriptions: ${missingDescriptions.join(', ')}` });
+    }
+    const nonAdjacentBase = state.workflow.transitions.filter(transition => !isAdjacent(state.workflow.statuses, transition.from, transition.to));
+    if (nonAdjacentBase.length) {
+      items.push({ level: 'warn', title: 'Unsupported base transitions', desc: 'Only adjacent status transitions are editable in this designer. Non-adjacent base transitions will be dropped on save.' });
+    }
+    Object.keys(state.workflow.systems).forEach(name => {
+      const overlay = state.workflow.systems[name] || { transitions: [], statuses: [] };
+      if ((overlay.statuses || []).length) {
+        items.push({ level: 'warn', title: `${name} overlay statuses`, desc: 'Subsystem overlay statuses are preserved in YAML but not edited visually here.' });
+      }
+      const invalid = (overlay.transitions || []).filter(transition => !isAdjacent(state.workflow.statuses, transition.from, transition.to));
+      if (invalid.length) {
+        items.push({ level: 'warn', title: `${name} overlay transitions`, desc: 'Non-adjacent subsystem transitions will be dropped on save.' });
+      }
+    });
+    if (!items.length) {
+      items.push({ level: 'good', title: 'Workflow shape looks clean', desc: 'Ordered statuses and adjacent transition actions are ready to save.' });
+    }
+    return items;
+  }
+
+  function renderPalette() {
+    const root = document.getElementById('palette-root');
+    if (!root) return;
+    const canAdd = !!(state.selected && (state.selected.kind === 'transition' || state.selected.kind === 'action'));
+    root.innerHTML = ACTION_TYPES.map(action => `
+      <button class="palette-item" data-add-action="${escapeAttr(action.type)}" ${canAdd ? '' : 'disabled'}>
+        <div class="palette-icon" style="background:${action.color}">${escapeHTML(action.title.slice(0, 1))}</div>
+        <div>
+          <div class="palette-item-title">${escapeHTML(action.title)}</div>
+          <div class="palette-item-desc">${escapeHTML(action.desc)}</div>
+        </div>
+      </button>
+    `).join('');
+  }
+
+  function renderSystems() {
+    const root = document.getElementById('starter-root');
+    if (!root) return;
+    const systemNames = Object.keys(state.workflow.systems).sort();
+    root.innerHTML = `
+      <button class="starter-item" id="add-system-btn">
+        <div class="palette-icon" style="background:#2563eb">+</div>
+        <div>
+          <div class="starter-item-title">Add Subsystem</div>
+          <div class="starter-item-desc">Create an overlay with extra transition actions for one subsystem.</div>
+        </div>
+      </button>
+      ${systemNames.map(name => {
+        const overlay = state.workflow.systems[name] || { transitions: [] };
+        const count = (overlay.transitions || []).reduce((sum, transition) => sum + transition.actions.length, 0);
+        return `
+          <button class="starter-item" data-select-system="${escapeAttr(name)}">
+            <div class="palette-icon" style="background:#0f766e">${escapeHTML(name.slice(0, 1).toUpperCase())}</div>
+            <div>
+              <div class="starter-item-title">${escapeHTML(name)}</div>
+              <div class="starter-item-desc">${count} overlay actions across ${(overlay.transitions || []).length} transitions</div>
+            </div>
+          </button>
+        `;
+      }).join('')}
+    `;
+  }
+
+  function renderReadiness() {
+    const root = document.getElementById('readiness-root');
+    if (!root) return;
+    const checks = readinessChecks();
+    const worst = checks.some(item => item.level === 'error') ? 'error' : (checks.some(item => item.level === 'warn') ? 'warn' : 'good');
+    const pillText = worst === 'error' ? 'Needs cleanup' : (worst === 'warn' ? 'Mostly ready' : 'Ready to save');
+    root.innerHTML = `
+      <div class="readiness-pill ${worst}">${escapeHTML(pillText)}</div>
+      <div class="readiness-list">
+        ${checks.map(item => `
+          <div class="readiness-item ${item.level}">
+            <div class="palette-item-title">${escapeHTML(item.title)}</div>
+            <div class="readiness-item-desc">${escapeHTML(item.desc)}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function renderDebug() {
+    const root = document.getElementById('debug-root');
+    if (!root) return;
+    const serverBaseActions = state.workflow.transitions.reduce((sum, transition) => sum + transition.actions.length, 0);
+    const overlayCount = Object.keys(state.workflow.systems).length;
+    root.innerHTML = `
+      <div class="readiness-list">
+        <div class="readiness-item good">
+          <div class="palette-item-title">Server workflow source</div>
+          <div class="readiness-item-desc">${escapeHTML(state.serverSource)}</div>
+        </div>
+        <div class="readiness-item good">
+          <div class="palette-item-title">Save target</div>
+          <div class="readiness-item-desc">${escapeHTML(state.serverTarget)}</div>
+        </div>
+        <div class="readiness-item ${state.draftLoaded ? 'warn' : 'good'}">
+          <div class="palette-item-title">Draft state</div>
+          <div class="readiness-item-desc">${state.draftLoaded ? 'Local draft currently overrides the server-loaded workflow.' : 'Using the server-loaded workflow with no local override.'}</div>
+        </div>
+        <div class="readiness-item good">
+          <div class="palette-item-title">Current workflow</div>
+          <div class="readiness-item-desc">${statusCount()} statuses, ${baseTransitionCount()} adjacent transitions, ${serverBaseActions} base actions, ${overlayCount} subsystem overlays.</div>
+        </div>
+        ${debugEvents.map(item => `
+          <div class="readiness-item warn">
+            <div class="palette-item-title">${escapeHTML(item.kind.toUpperCase())}</div>
+            <div class="readiness-item-desc">${escapeHTML(item.message)}<br>${escapeHTML(item.at)}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function selectionMatches(kind, from, to, systemName, actionIndex) {
+    if (!state.selected || state.selected.kind !== kind) return false;
+    return (state.selected.system || '') === (systemName || '')
+      && state.selected.from === from
+      && state.selected.to === to
+      && (kind !== 'action' || state.selected.actionIndex === actionIndex);
+  }
+
+  function transitionCardHTML(pair, systemName) {
+    const transition = findTransition(systemName ? ensureSystem(systemName).transitions : state.workflow.transitions, pair.from, pair.to) || normalizeTransition({ from: pair.from, to: pair.to, actions: [] });
+    const selected = selectionMatches('transition', pair.from, pair.to, systemName) || selectionMatches('action', pair.from, pair.to, systemName);
+    const scopeLabel = systemName || 'Base';
+    return `
+      <div class="transition-stack ${selected ? 'selected' : ''}" data-select-transition="${escapeAttr(pair.from)}|${escapeAttr(pair.to)}|${escapeAttr(systemName || '')}">
+        <div class="transition-stack-header">
+          <div>
+            <div class="transition-stack-label">${escapeHTML(scopeLabel)} transition</div>
+            <div class="transition-stack-title">${escapeHTML(pair.from)} -> ${escapeHTML(pair.to)}</div>
+          </div>
+          <button class="designer-btn transition-add-btn" data-add-action-here="${escapeAttr(pair.from)}|${escapeAttr(pair.to)}|${escapeAttr(systemName || '')}">+ Action</button>
+        </div>
+        <div class="transition-actions">
+          ${transition.actions.length ? transition.actions.map((action, index) => {
+            const meta = actionMeta(action.type);
+            return `
+              <button class="action-block ${selectionMatches('action', pair.from, pair.to, systemName, index) ? 'selected' : ''}" data-select-action="${escapeAttr(pair.from)}|${escapeAttr(pair.to)}|${index}|${escapeAttr(systemName || '')}">
+                <span class="workflow-chip" style="background:${meta.color}">${escapeHTML(meta.title)}</span>
+                <div class="action-block-title">${escapeHTML(actionSummary(action))}</div>
+              </button>
+            `;
+          }).join('') : `<div class="transition-empty">No actions configured yet.</div>`}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderCanvas() {
+    const scene = document.getElementById('canvas-scene');
+    if (!scene) return;
+    const empty = document.getElementById('canvas-empty');
+    if (empty) empty.style.display = statusCount() ? 'none' : '';
+    const hint = document.getElementById('canvas-hint');
+    if (hint) hint.style.display = statusCount() ? '' : 'none';
+    const edgeLayer = document.getElementById('edge-layer');
+    if (edgeLayer) edgeLayer.style.display = 'none';
+    const minimap = document.getElementById('minimap');
+    if (minimap) minimap.style.display = 'none';
+
+    if (!statusCount()) {
+      scene.innerHTML = '';
+      return;
+    }
+
+    const pairs = transitionPairs();
+    const baseFlow = [];
+    state.workflow.statuses.forEach((status, index) => {
+      const selected = state.selected?.kind === 'status' && state.selected.statusIndex === index;
+      baseFlow.push(`
+        <button class="status-card-linear ${selected ? 'selected' : ''}" data-select-status="${index}">
+          <div class="status-card-kicker">Status</div>
+          <div class="status-card-title">${escapeHTML(status.name)}</div>
+          <div class="status-card-desc">${escapeHTML(status.description || 'No description yet')}</div>
+        </button>
+      `);
+      if (index < pairs.length) baseFlow.push(transitionCardHTML(pairs[index], ''));
+    });
+
+    const systemsHTML = Object.keys(state.workflow.systems).sort().map(name => {
+      const overlay = state.workflow.systems[name] || { transitions: [] };
+      return `
+        <section class="overlay-group">
+          <div class="overlay-group-header">
+            <div>
+              <div class="transition-stack-label">Subsystem overlay</div>
+              <div class="overlay-group-title">${escapeHTML(name)}</div>
+            </div>
+            <div class="overlay-group-actions">
+              <button class="designer-btn" data-jump-system="${escapeAttr(name)}">Focus</button>
+              <button class="designer-btn" data-delete-system="${escapeAttr(name)}">Delete</button>
+            </div>
+          </div>
+          <div class="workflow-linear">
+            ${state.workflow.statuses.map((status, index) => {
+              const parts = [`
+                <div class="status-spacer">
+                  <div class="status-spacer-title">${escapeHTML(status.name)}</div>
+                </div>
+              `];
+              if (index < pairs.length) parts.push(transitionCardHTML(pairs[index], name));
+              return parts.join('');
+            }).join('')}
+          </div>
+        </section>
+      `;
+    }).join('');
+
+    scene.innerHTML = `
+      <div class="workflow-canvas-flow">
+        <section class="workflow-lane-section">
+          <div class="overlay-group-header">
+            <div>
+              <div class="transition-stack-label">Base workflow</div>
+              <div class="overlay-group-title">Ordered lifecycle</div>
+            </div>
+          </div>
+          <div class="workflow-linear">${baseFlow.join('')}</div>
+        </section>
+        ${systemsHTML ? `<section class="workflow-overlays">${systemsHTML}</section>` : ''}
+      </div>
+    `;
+  }
+
+  function inspectorStatus() {
+    const status = state.workflow.statuses[state.selected.statusIndex];
+    if (!status) return `<div class="inspector-empty">Select a status or transition.</div>`;
+    return `
+      <div class="inspector-section">
+        <div class="inspector-chip-row">
+          <span class="inspector-mini-chip">Status</span>
+          <span class="inspector-mini-chip">${escapeHTML(status.name || 'unnamed')}</span>
+        </div>
+        <label class="inspector-label">Status Name</label>
+        <input class="inspector-input" id="status-name-input" value="${escapeAttr(status.name)}" placeholder="in progress">
+        <label class="inspector-label">Description</label>
+        <textarea class="inspector-textarea" id="status-description-input" placeholder="Explain what being in this status means.">${escapeHTML(status.description)}</textarea>
+      </div>
+      <div class="inspector-section">
+        <div class="inspector-row">
+          <button class="designer-btn" id="move-status-left-btn" ${state.selected.statusIndex === 0 ? 'disabled' : ''}>Move Left</button>
+          <button class="designer-btn" id="move-status-right-btn" ${state.selected.statusIndex === state.workflow.statuses.length - 1 ? 'disabled' : ''}>Move Right</button>
+        </div>
+        <div class="inspector-help">Transitions are implicit between adjacent statuses in this order.</div>
+        <button class="designer-btn" id="duplicate-status-btn">Duplicate Status</button>
+        <button class="designer-btn" id="delete-status-btn" ${state.workflow.statuses.length <= 1 ? 'disabled' : ''}>Delete Status</button>
+      </div>
+    `;
+  }
+
+  function inspectorTransition() {
+    const transition = getSelectedTransition(true);
+    const systemName = state.selected.system || '';
+    const actionButtons = ACTION_TYPES.map(action => `<button class="designer-btn" data-add-action="${escapeAttr(action.type)}">${escapeHTML(action.title)}</button>`).join('');
+    return `
+      <div class="inspector-section">
+        <div class="inspector-chip-row">
+          <span class="inspector-mini-chip">${escapeHTML(systemName || 'Base')}</span>
+          <span class="inspector-mini-chip">${escapeHTML(transition.from)} -> ${escapeHTML(transition.to)}</span>
+        </div>
+        <div class="inspector-help">This transition owns an ordered list of actions. Actions run top to bottom.</div>
+      </div>
+      <div class="inspector-section">
+        <label class="inspector-label">Add Action</label>
+        <div class="inspector-chip-row">${actionButtons}</div>
+      </div>
+      <div class="inspector-section">
+        <label class="inspector-label">Action Order</label>
+        <div class="readiness-list">
+          ${transition.actions.length ? transition.actions.map((action, index) => `
+            <button class="palette-item" data-select-action="${escapeAttr(transition.from)}|${escapeAttr(transition.to)}|${index}|${escapeAttr(systemName)}">
+              <div class="palette-icon" style="background:${actionMeta(action.type).color}">${escapeHTML(actionMeta(action.type).title.slice(0, 1))}</div>
+              <div>
+                <div class="palette-item-title">${escapeHTML(index + 1 + '. ' + actionMeta(action.type).title)}</div>
+                <div class="palette-item-desc">${escapeHTML(actionSummary(action))}</div>
+              </div>
+            </button>
+          `).join('') : `<div class="inspector-empty">No actions yet. Add one from the buttons above.</div>`}
+        </div>
+      </div>
+    `;
+  }
+
+  function statusOptions(selected) {
+    return state.workflow.statuses.map(status => `<option value="${escapeAttr(status.name)}" ${status.name === selected ? 'selected' : ''}>${escapeHTML(status.name)}</option>`).join('');
+  }
+
+  function inspectorAction() {
+    const transition = getSelectedTransition(true);
+    const action = transition.actions[state.selected.actionIndex];
+    if (!action) return inspectorTransition();
+    const meta = actionMeta(action.type);
+    let fields = '';
+    if (action.type === 'validate') {
+      const parsed = parseValidationRule(action.rule);
+      const ruleMeta = validationRuleMeta(action.rule);
+      fields = `
+        <label class="inspector-label">Validation Rule</label>
+        <select class="inspector-select" id="action-validation-type">
+          ${VALIDATION_RULES.map(rule => `<option value="${escapeAttr(rule.value)}" ${rule.value === parsed.type ? 'selected' : ''}>${escapeHTML(rule.label)}</option>`).join('')}
+        </select>
+        <div class="inspector-help">${escapeHTML(ruleMeta?.description || 'Choose a built-in validation rule.')}</div>
+        ${(ruleMeta && ruleMeta.argLabel) ? `
+          <label class="inspector-label">${escapeHTML(ruleMeta.argLabel)}</label>
+          <input class="inspector-input" id="action-validation-arg" value="${escapeAttr(parsed.arg)}" placeholder="${escapeAttr(ruleMeta.argPlaceholder || '')}">
+        ` : ''}
+      `;
+    } else if (action.type === 'append_section') {
+      fields = `
+        <label class="inspector-label">Section Title</label>
+        <input class="inspector-input" id="action-title-input" value="${escapeAttr(action.title)}" placeholder="Implementation">
+        <div class="inspector-help">The section will be created if missing, or reused if it already exists.</div>
+        <label class="inspector-label">Section Body</label>
+        <textarea class="inspector-textarea" id="action-body-input" placeholder="- [ ] What should be added">${escapeHTML(action.body)}</textarea>
+      `;
+    } else if (action.type === 'inject_prompt') {
+      fields = `
+        <label class="inspector-label">Injected Prompt</label>
+        <textarea class="inspector-textarea" id="action-prompt-input" placeholder="Explain what the next agent should pay attention to.">${escapeHTML(action.prompt)}</textarea>
+      `;
+    } else if (action.type === 'require_human_approval') {
+      fields = `
+        <label class="inspector-label">Approved Status</label>
+        <select class="inspector-select" id="action-approval-status">
+          ${statusOptions(action.status)}
+        </select>
+        <div class="inspector-help">This reuses the existing issue approval metadata instead of creating a separate approval state.</div>
+      `;
+    } else if (action.type === 'set_fields') {
+      const fieldMeta = setFieldMeta(action.field);
+      fields = `
+        <label class="inspector-label">Allowed Field</label>
+        <select class="inspector-select" id="action-field-select">
+          ${SET_FIELD_OPTIONS.map(option => `<option value="${escapeAttr(option.value)}" ${option.value === action.field ? 'selected' : ''}>${escapeHTML(option.label)}</option>`).join('')}
+        </select>
+        <div class="inspector-help">${escapeHTML(fieldMeta?.description || 'Select one of the supported frontmatter fields.')}</div>
+        <label class="inspector-label">Value</label>
+        <input class="inspector-input" id="action-field-value" value="${escapeAttr(action.value)}" placeholder="Leave empty to clear the field">
+      `;
+    }
+    return `
+      <div class="inspector-section">
+        <div class="inspector-chip-row">
+          <span class="inspector-mini-chip">${escapeHTML(state.selected.system || 'Base')}</span>
+          <span class="inspector-mini-chip">${escapeHTML(transition.from)} -> ${escapeHTML(transition.to)}</span>
+          <span class="inspector-mini-chip">${escapeHTML(meta.title)}</span>
+        </div>
+        <div class="inspector-help">Action ${state.selected.actionIndex + 1} of ${transition.actions.length}. Actions run in this exact order.</div>
+        ${fields}
+      </div>
+      <div class="inspector-section">
+        <div class="inspector-row">
+          <button class="designer-btn" id="move-action-up-btn" ${state.selected.actionIndex === 0 ? 'disabled' : ''}>Move Up</button>
+          <button class="designer-btn" id="move-action-down-btn" ${state.selected.actionIndex === transition.actions.length - 1 ? 'disabled' : ''}>Move Down</button>
+        </div>
+        <button class="designer-btn" id="delete-action-btn">Delete Action</button>
+      </div>
+    `;
+  }
+
+  function renderInspector() {
+    const root = document.getElementById('inspector-root');
+    if (!root) return;
+    if (!state.selected) {
+      root.innerHTML = `<div class="inspector-empty">Add a status to start building the workflow.</div>`;
+      return;
+    }
+    if (state.selected.kind === 'status') {
+      root.innerHTML = inspectorStatus();
+      return;
+    }
+    if (state.selected.kind === 'transition') {
+      root.innerHTML = inspectorTransition();
+      return;
+    }
+    root.innerHTML = inspectorAction();
+  }
+
+  function render() {
+    sanitizeSelection();
+    updateBadges();
+    renderPalette();
+    renderSystems();
+    renderReadiness();
+    renderDebug();
+    renderCanvas();
+    renderInspector();
+  }
+
+  function currentTransitionTarget() {
+    if (!state.selected) return null;
+    if (state.selected.kind === 'transition' || state.selected.kind === 'action') {
+      return { from: state.selected.from, to: state.selected.to, system: state.selected.system || '' };
+    }
+    return null;
+  }
+
+  function addAction(type, target) {
+    const context = target || currentTransitionTarget();
+    if (!context) {
+      showToast('Select a transition first', true);
+      return;
+    }
+    const transition = ensureTransition(context.system, context.from, context.to);
+    transition.actions.push(defaultAction(type, transition));
+    state.selected = {
+      kind: 'action',
+      system: context.system || '',
+      from: context.from,
+      to: context.to,
+      actionIndex: transition.actions.length - 1,
+    };
+    logEvent('edit', `Added ${type} to ${context.system || 'base'} ${context.from} -> ${context.to}`);
+    persistState();
+    render();
+  }
+
+  function addStatus() {
+    const nextIndex = state.workflow.statuses.length + 1;
+    state.workflow.statuses.push(normalizeStatus({ name: `new-status-${nextIndex}`, description: 'Describe this status' }));
+    state.selected = { kind: 'status', statusIndex: state.workflow.statuses.length - 1 };
+    logEvent('edit', `Added status new-status-${nextIndex}`);
+    persistState();
+    render();
+  }
+
+  function duplicateStatus() {
+    if (!state.selected || state.selected.kind !== 'status') return;
+    const current = state.workflow.statuses[state.selected.statusIndex];
+    const copy = normalizeStatus({
+      name: `${current.name}-copy`,
+      description: current.description,
+    });
+    state.workflow.statuses.splice(state.selected.statusIndex + 1, 0, copy);
+    state.selected = { kind: 'status', statusIndex: state.selected.statusIndex + 1 };
+    logEvent('edit', `Duplicated status ${current.name}`);
+    persistState();
+    render();
+  }
+
+  function moveStatus(direction) {
+    if (!state.selected || state.selected.kind !== 'status') return;
+    const from = state.selected.statusIndex;
+    const to = from + direction;
+    if (to < 0 || to >= state.workflow.statuses.length) return;
+    const [item] = state.workflow.statuses.splice(from, 1);
+    state.workflow.statuses.splice(to, 0, item);
+    state.selected = { kind: 'status', statusIndex: to };
+    logEvent('edit', `Moved status ${item.name}`);
+    persistState();
+    render();
+  }
+
+  function deleteStatus() {
+    if (!state.selected || state.selected.kind !== 'status' || state.workflow.statuses.length <= 1) return;
+    const removed = state.workflow.statuses.splice(state.selected.statusIndex, 1)[0];
+    state.workflow.transitions = state.workflow.transitions.filter(transition => transition.from !== removed.name && transition.to !== removed.name);
+    Object.keys(state.workflow.systems).forEach(name => {
+      state.workflow.systems[name].transitions = state.workflow.systems[name].transitions.filter(transition => transition.from !== removed.name && transition.to !== removed.name);
+    });
+    state.selected = { kind: 'status', statusIndex: Math.max(0, state.selected.statusIndex - 1) };
+    logEvent('edit', `Deleted status ${removed.name}`);
+    persistState();
+    render();
+  }
+
+  function moveAction(direction) {
+    if (!state.selected || state.selected.kind !== 'action') return;
+    const transition = getSelectedTransition(false);
+    if (!transition) return;
+    const from = state.selected.actionIndex;
+    const to = from + direction;
+    if (to < 0 || to >= transition.actions.length) return;
+    const [item] = transition.actions.splice(from, 1);
+    transition.actions.splice(to, 0, item);
+    state.selected.actionIndex = to;
+    logEvent('edit', `Moved action in ${state.selected.system || 'base'} ${state.selected.from} -> ${state.selected.to}`);
+    persistState();
+    render();
+  }
+
+  function deleteAction() {
+    if (!state.selected || state.selected.kind !== 'action') return;
+    const transition = getSelectedTransition(false);
+    if (!transition) return;
+    transition.actions.splice(state.selected.actionIndex, 1);
+    if (transition.actions.length) {
+      state.selected.actionIndex = Math.max(0, state.selected.actionIndex - 1);
+    } else {
+      state.selected = { kind: 'transition', system: state.selected.system || '', from: state.selected.from, to: state.selected.to };
+    }
+    pruneEmptyTransitions();
+    logEvent('edit', `Deleted action from ${state.selected.system || 'base'} ${state.selected.from} -> ${state.selected.to}`);
+    persistState();
+    render();
+  }
+
+  function addSystem() {
+    const name = window.prompt('Subsystem name');
+    if (!name) return;
+    const trimmed = name.trim();
     if (!trimmed) return;
+    if (state.workflow.systems[trimmed]) {
+      showToast(`Subsystem ${trimmed} already exists`, true);
+      return;
+    }
+    state.workflow.systems[trimmed] = { statuses: [], transitions: [] };
+    const pair = transitionPairs()[0];
+    if (pair) state.selected = { kind: 'transition', system: trimmed, from: pair.from, to: pair.to };
+    logEvent('edit', `Added subsystem overlay ${trimmed}`);
+    persistState();
+    render();
+  }
+
+  function deleteSystem(name) {
+    if (!state.workflow.systems[name]) return;
+    delete state.workflow.systems[name];
+    if (state.selected?.system === name) {
+      state.selected = statusCount() ? { kind: 'status', statusIndex: 0 } : null;
+    }
+    logEvent('edit', `Deleted subsystem overlay ${name}`);
+    persistState();
+    render();
+  }
+
+  function focusTransition(systemName) {
+    const pair = transitionPairs().find(item => findTransition(systemName ? state.workflow.systems[systemName].transitions : state.workflow.transitions, item.from, item.to));
+    if (pair) {
+      selectTransition(pair.from, pair.to, systemName);
+      requestAnimationFrame(focusSelection);
+    }
+  }
+
+  function focusSelection() {
+    const element = document.querySelector('.status-card-linear.selected, .transition-stack.selected, .action-block.selected');
+    element?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+  }
+
+  async function reloadFromServer() {
+    try {
+      const response = await fetch(DATA_URL, { headers: { Accept: 'application/json' } });
+      if (!response.ok) throw new Error(`Server returned ${response.status}`);
+      const payload = await response.json();
+      state.workflow = simplifyWorkflow(payload.workflow || EMPTY_WORKFLOW);
+      state.serverSource = payload.source || state.serverSource;
+      state.serverTarget = payload.target || state.serverTarget;
+      state.selected = statusCount() ? { kind: 'status', statusIndex: 0 } : null;
+      localStorage.removeItem(STORAGE_KEY);
+      state.draftLoaded = false;
+      logEvent('load', `Reloaded workflow from server file source: ${state.serverSource}`);
+      showToast('Reloaded project workflow from server', false);
+      render();
+    } catch (error) {
+      logEvent('error', `Server reload failed: ${error.message}`);
+      showToast(error.message, true);
+    }
+  }
+
+  async function saveWorkflow() {
+    const yaml = workflowToYAML(state.workflow);
+    try {
+      const response = await fetch(SAVE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ yaml }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `Save failed with ${response.status}`);
+      state.serverTarget = payload.path || state.serverTarget;
+      logEvent('save', `Saved workflow to ${payload.path || 'workflow.yaml'}`);
+      showToast(`Workflow saved to ${payload.path || 'workflow.yaml'}`, false);
+      renderDebug();
+      updateBadges();
+    } catch (error) {
+      logEvent('error', `Save failed: ${error.message}`);
+      showToast(error.message, true);
+    }
+  }
+
+  function importWorkflowText(text) {
+    const trimmed = text.trim();
+    if (!trimmed) throw new Error('Import text is empty');
     let parsed;
     if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
       parsed = JSON.parse(trimmed);
     } else {
       parsed = parseYAMLWorkflow(trimmed);
     }
-    if (parsed.statuses || parsed.Statuses) {
-      const next = workflowToDraft(parsed);
-      if (!next.nodes.length) {
-        throw new Error('Imported workflow did not contain any statuses');
-      }
-      state.nodes = next.nodes;
-      state.edges = next.edges;
-      state.systems = next.systems;
-      state.selectedId = next.nodes[0]?.id || null;
-    } else {
-      state.nodes = (parsed.nodes || []).map(normalizeNode);
-      state.edges = (parsed.edges || []).map(normalizeEdge);
-      state.systems = normalizeSystems(parsed.systems || {});
-      state.selectedId = state.nodes[0]?.id || null;
-    }
-    state.selectedEdgeId = null;
-    state.connectFrom = null;
-    state.connectDrag = null;
-    state.zoom = 1;
+    const workflow = simplifyWorkflow(parsed.workflow || parsed);
+    if (!workflow.statuses.length) throw new Error('Imported workflow did not contain any statuses');
+    state.workflow = workflow;
+    state.selected = { kind: 'status', statusIndex: 0 };
+    state.draftLoaded = true;
     persistState();
-    logEvent('import', `Imported workflow with ${state.nodes.filter(node => node.type === 'status').length} statuses`);
+    logEvent('import', `Imported workflow with ${workflow.statuses.length} statuses`);
+    showToast(`Imported workflow: ${workflow.statuses.length} statuses`, false);
     render();
-    showToast(`Imported workflow: ${state.nodes.filter(node => node.type === 'status').length} statuses, ${state.edges.length} edges`, false);
   }
 
   function showModal(title, text, filename, mode) {
-    exportState = { title, text, filename, mode: mode || 'export' };
+    exportState = { title, text, filename, mode };
     document.getElementById('modal-title').textContent = title;
     document.getElementById('modal-text').value = text;
-    document.getElementById('download-modal-btn').textContent = exportState.mode === 'import' ? 'Apply Import' : 'Download';
-    document.getElementById('copy-modal-btn').style.display = exportState.mode === 'import' ? 'none' : '';
-    document.getElementById('pick-file-btn').style.display = exportState.mode === 'import' ? '' : 'none';
     document.getElementById('export-modal').classList.add('open');
+    document.getElementById('pick-file-btn').style.display = mode === 'import' ? '' : 'none';
+    document.getElementById('download-modal-btn').style.display = mode === 'export' ? '' : 'none';
+    document.getElementById('copy-modal-btn').textContent = mode === 'import' ? 'Apply Import' : 'Copy';
   }
 
   function closeModal() {
     document.getElementById('export-modal').classList.remove('open');
   }
 
-  function downloadText(filename, text) {
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  }
-
-  function renderPalette() {
-    const root = document.getElementById('palette-root');
-    root.innerHTML = NODE_TYPES.map(item => `
-      <button class="palette-item" data-type="${item.type}">
-        <span class="palette-icon" style="background:${item.color}">${item.icon}</span>
-        <span>
-          <div class="palette-item-title">${item.title}</div>
-          <div class="palette-item-desc">${item.desc}</div>
-        </span>
-      </button>
-    `).join('');
-    root.querySelectorAll('[data-type]').forEach(button => {
-      button.addEventListener('click', () => addNode(button.dataset.type));
-    });
-
-    const starterRoot = document.getElementById('starter-root');
-    starterRoot.innerHTML = STARTERS.map(item => `
-      <button class="starter-item" data-starter="${item.key}">
-        <span>
-          <div class="starter-item-title">${item.title}</div>
-          <div class="starter-item-desc">${item.desc}</div>
-        </span>
-      </button>
-    `).join('');
-    starterRoot.querySelectorAll('[data-starter]').forEach(button => {
-      button.addEventListener('click', () => insertStarter(button.dataset.starter));
-    });
-  }
-
-  function getReadiness() {
-    const items = [];
-    const statuses = state.nodes.filter(node => node.type === 'status');
-    const names = new Set();
-    const dupes = new Set();
-    statuses.forEach(node => {
-      const key = node.title.trim().toLowerCase();
-      if (!key) return;
-      if (names.has(key)) dupes.add(node.title.trim());
-      names.add(key);
-    });
-    if (!statuses.length) {
-      items.push({ level: 'error', title: 'No statuses', desc: 'Add at least one status node to define the workflow lifecycle.' });
-    } else {
-      items.push({ level: 'good', title: `${statuses.length} statuses`, desc: 'Statuses export in left-to-right order.' });
-    }
-    items.push({ level: 'good', title: `${state.nodes.length - statuses.length} action nodes`, desc: 'Action nodes become transition actions when placed between statuses.' });
-    if (dupes.size) {
-      items.push({ level: 'error', title: 'Duplicate status names', desc: Array.from(dupes).join(', ') + ' should be unique.' });
-    }
-    const orphanActions = state.nodes.filter(node => node.type !== 'status' && (!incomingEdges(node.id).length || !outgoingEdges(node.id).length));
-    if (orphanActions.length) {
-      items.push({ level: 'warn', title: 'Orphan action nodes', desc: orphanActions.map(node => node.title).join(', ') + ' are not fully connected.' });
-    }
-    if (Object.keys(state.systems || {}).length) {
-      items.push({ level: 'good', title: `${Object.keys(state.systems).length} subsystem overlays preserved`, desc: 'Existing `systems:` YAML stays intact on save.' });
-    }
-    return items;
-  }
-
-  function renderReadiness() {
-    const items = getReadiness();
-    const errors = items.filter(item => item.level === 'error').length;
-    const warnings = items.filter(item => item.level === 'warn').length;
-    const level = errors ? 'error' : warnings ? 'warn' : 'good';
-    const label = errors ? `${errors} issue${errors === 1 ? '' : 's'}` : warnings ? `${warnings} warning${warnings === 1 ? '' : 's'}` : 'Ready';
-    document.getElementById('readiness-root').innerHTML = `
-      <div class="readiness-pill ${level}">${label}</div>
-      <div class="readiness-list">
-        ${items.map(item => `
-          <div class="readiness-item ${item.level}">
-            <div class="palette-item-title">${item.title}</div>
-            <div class="readiness-item-desc">${item.desc}</div>
-          </div>
-        `).join('')}
-      </div>
-    `;
-    document.getElementById('status-count-badge').textContent = `${state.nodes.filter(node => node.type === 'status').length} statuses / ${state.edges.length} edges`;
-  }
-
-  function renderDebug() {
-    const root = document.getElementById('debug-root');
-    if (!root) return;
-
-    const source = document.getElementById('workflow-source-badge')?.textContent || 'unknown';
-    const target = document.getElementById('workflow-target-badge')?.textContent || 'unknown';
-    const normalizedInitial = normalizeWorkflow(INITIAL_WORKFLOW);
-    const currentStatuses = state.nodes.filter(node => node.type === 'status').length;
-    const currentActions = state.nodes.filter(node => node.type !== 'status').length;
-    const currentTransitions = collectTransitions().length;
-
-    let draftInfo = 'No local draft';
-    const rawDraft = localStorage.getItem(STORAGE_KEY);
-    if (rawDraft) {
-      try {
-        const parsed = JSON.parse(rawDraft);
-        draftInfo = `Local draft v${parsed.version ?? 'unknown'} present`;
-      } catch (_) {
-        draftInfo = 'Local draft present but unreadable';
-      }
-    }
-
-    root.innerHTML = `
-      <div class="readiness-list">
-        <div class="readiness-item good">
-          <div class="palette-item-title">Server Source</div>
-          <div class="readiness-item-desc">${escapeHTML(source)}</div>
-        </div>
-        <div class="readiness-item good">
-          <div class="palette-item-title">Save Target</div>
-          <div class="readiness-item-desc">${escapeHTML(target)}</div>
-        </div>
-        <div class="readiness-item ${rawDraft ? 'warn' : 'good'}">
-          <div class="palette-item-title">Draft State</div>
-          <div class="readiness-item-desc">${escapeHTML(draftInfo)}</div>
-        </div>
-        <div class="readiness-item good">
-          <div class="palette-item-title">Server Workflow</div>
-          <div class="readiness-item-desc">${normalizedInitial.statuses.length} statuses, ${normalizedInitial.transitions.length} transitions, ${Object.keys(normalizedInitial.systems || {}).length} systems</div>
-        </div>
-        <div class="readiness-item good">
-          <div class="palette-item-title">Current Draft</div>
-          <div class="readiness-item-desc">${currentStatuses} statuses, ${currentActions} action nodes, ${currentTransitions} exported transitions</div>
-        </div>
-        ${debugEvents.map(event => `
-          <div class="readiness-item ${event.kind === 'error' ? 'error' : event.kind === 'warn' ? 'warn' : 'good'}">
-            <div class="palette-item-title">${escapeHTML(event.kind.toUpperCase())}</div>
-            <div class="readiness-item-desc">${escapeHTML(event.message)}</div>
-          </div>
-        `).join('')}
-      </div>
-    `;
-  }
-
-  function renderEdges() {
-    const svg = document.getElementById('edge-layer');
-    const stage = document.getElementById('canvas-scene');
-    const width = Math.max(stage.scrollWidth, stage.clientWidth, 1400);
-    const height = Math.max(stage.scrollHeight, stage.clientHeight, 900);
-    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-    svg.setAttribute('width', width);
-    svg.setAttribute('height', height);
-
-    svg.innerHTML = state.edges.map(edge => {
-      const from = findNode(edge.from);
-      const to = findNode(edge.to);
-      if (!from || !to) return '';
-      const startX = from.x + 236;
-      const startY = from.y + 48;
-      const endX = to.x;
-      const endY = to.y + 48;
-      const delta = Math.max(90, Math.abs(endX - startX) / 2);
-      const path = `M ${startX} ${startY} C ${startX + delta} ${startY}, ${endX - delta} ${endY}, ${endX} ${endY}`;
-      return `
-        <g data-edge-id="${edge.id}">
-          <path class="workflow-edge-hit" d="${path}" fill="none" stroke="transparent" stroke-width="16" stroke-linecap="round"></path>
-          <path class="workflow-edge-path ${edge.id === state.selectedEdgeId ? 'selected' : ''}" d="${path}" fill="none" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round"></path>
-        </g>
-      `;
-    }).join('');
-
-    if (state.connectDrag && state.connectFrom && findNode(state.connectFrom)) {
-      const from = findNode(state.connectFrom);
-      const startX = from.x + 236;
-      const startY = from.y + 48;
-      const endX = state.connectDrag.x;
-      const endY = state.connectDrag.y;
-      const delta = Math.max(90, Math.abs(endX - startX) / 2);
-      const path = `M ${startX} ${startY} C ${startX + delta} ${startY}, ${endX - delta} ${endY}, ${endX} ${endY}`;
-      svg.innerHTML += `<path class="workflow-edge-path workflow-ghost-edge" d="${path}" fill="none" stroke="#60a5fa" stroke-width="2" stroke-dasharray="7 6" stroke-linecap="round"></path>`;
-    }
-
-    svg.querySelectorAll('[data-edge-id]').forEach(group => {
-      group.addEventListener('click', event => {
-        event.stopPropagation();
-        state.selectedEdgeId = group.dataset.edgeId;
-        state.selectedId = null;
-        state.connectFrom = null;
-        state.connectDrag = null;
-        render();
-      });
-    });
-  }
-
-  function renderNodes() {
-    const stage = document.getElementById('canvas-scene');
-    stage.querySelectorAll('.workflow-node').forEach(node => node.remove());
-    document.getElementById('canvas-empty').style.display = state.nodes.length ? 'none' : 'block';
-
-    state.nodes.forEach(node => {
-      const meta = typeMeta(node.type);
-      const el = document.createElement('div');
-      el.className = 'workflow-node'
-        + (node.id === state.selectedId ? ' selected' : '')
-        + (state.connectFrom && state.connectFrom !== node.id ? ' connect-target' : '')
-        + (state.connectFrom === node.id ? ' connect-from' : '');
-      el.dataset.id = node.id;
-      el.style.left = node.x + 'px';
-      el.style.top = node.y + 'px';
-      el.style.setProperty('--node-bg', colorForType(node.type));
-      el.innerHTML = `
-        <div class="workflow-node-header">
-          <div>
-            <div class="workflow-node-type">${escapeHTML(meta.title)}</div>
-            <div class="workflow-node-title">${escapeHTML(node.title)}</div>
-          </div>
-          <div class="workflow-node-actions">
-            <button class="workflow-node-action" data-action="connect" title="Connect">+</button>
-            <button class="workflow-node-action" data-action="delete" title="Delete">×</button>
-          </div>
-        </div>
-        <div class="workflow-node-body">
-          <div class="workflow-node-summary">${escapeHTML(nodeSummary(node))}</div>
-          <div class="workflow-node-meta">
-            <span class="workflow-chip">${incomingEdges(node.id).length} in</span>
-            <span class="workflow-chip">${outgoingEdges(node.id).length} out</span>
-          </div>
-        </div>
-        <div class="workflow-node-handle input" data-handle="input" title="Incoming connection"></div>
-        <div class="workflow-node-handle output" data-handle="output" title="Drag to connect"></div>
-      `;
-
-      el.addEventListener('pointerdown', event => {
-        if (event.target.closest('[data-action]') || event.target.closest('[data-handle]')) return;
-        event.stopPropagation();
-        state.selectedId = node.id;
-        state.selectedEdgeId = null;
-        const point = pointerToCanvas(event);
-        state.drag = {
-          id: node.id,
-          offsetX: point.x - node.x,
-          offsetY: point.y - node.y,
-        };
-        el.setPointerCapture(event.pointerId);
-        renderInspector();
-      });
-
-      el.addEventListener('pointermove', event => {
-        if (!state.drag || state.drag.id !== node.id) return;
-        const point = pointerToCanvas(event);
-        node.x = Math.max(20, point.x - state.drag.offsetX);
-        node.y = Math.max(20, point.y - state.drag.offsetY);
-        renderEdges();
-        renderMinimap();
-        el.style.left = node.x + 'px';
-        el.style.top = node.y + 'px';
-      });
-
-      el.addEventListener('pointerup', event => {
-        if (state.drag && state.drag.id === node.id) {
-          state.drag = null;
-          persistState();
-          render();
-        }
-        el.releasePointerCapture?.(event.pointerId);
-      });
-
-      el.addEventListener('click', event => {
-        if (event.target.closest('[data-handle]')) return;
-        const action = event.target.closest('[data-action]')?.dataset.action;
-        if (action === 'delete') {
-          deleteNode(node.id);
-          return;
-        }
-        if (action === 'connect') {
-          if (state.connectFrom && state.connectFrom !== node.id) {
-            toggleConnection(state.connectFrom, node.id);
-          } else {
-            state.connectFrom = node.id;
-            render();
-          }
-          return;
-        }
-        if (state.connectFrom && state.connectFrom !== node.id) {
-          toggleConnection(state.connectFrom, node.id);
-          return;
-        }
-        state.selectedId = node.id;
-        state.selectedEdgeId = null;
-        render();
-      });
-
-      const outputHandle = el.querySelector('[data-handle="output"]');
-      outputHandle.addEventListener('pointerdown', event => {
-        event.stopPropagation();
-        const point = pointerToCanvas(event);
-        state.selectedId = node.id;
-        state.selectedEdgeId = null;
-        state.connectFrom = node.id;
-        state.connectDrag = { fromId: node.id, x: point.x, y: point.y };
-        outputHandle.setPointerCapture(event.pointerId);
-        render();
-      });
-      outputHandle.addEventListener('pointermove', event => {
-        if (!state.connectDrag || state.connectDrag.fromId !== node.id) return;
-        const point = pointerToCanvas(event);
-        state.connectDrag.x = point.x;
-        state.connectDrag.y = point.y;
-        renderEdges();
-      });
-      outputHandle.addEventListener('pointerup', event => {
-        if (state.connectDrag && state.connectDrag.fromId === node.id) {
-          state.connectDrag = null;
-          render();
-        }
-        outputHandle.releasePointerCapture?.(event.pointerId);
-      });
-
-      stage.appendChild(el);
-    });
-  }
-
-  function renderInspector() {
-    const root = document.getElementById('inspector-root');
-    const edge = findEdge(state.selectedEdgeId);
-    if (edge) {
-      const from = findNode(edge.from);
-      const to = findNode(edge.to);
-      root.innerHTML = `
-        <div class="inspector-section">
-          <div class="inspector-chip-row">
-            <span class="inspector-mini-chip">From: ${escapeHTML(from?.title || edge.from)}</span>
-            <span class="inspector-mini-chip">To: ${escapeHTML(to?.title || edge.to)}</span>
-          </div>
-          <div class="inspector-help">Connections only define the path. Transition semantics come from the action nodes on that path.</div>
-        </div>
-        <div class="inspector-section">
-          <button class="designer-btn" id="flip-edge-btn">Reverse Direction</button>
-          <button class="designer-btn" id="delete-edge-btn">Delete Connection</button>
-        </div>
-      `;
-      root.querySelector('#flip-edge-btn').addEventListener('click', () => {
-        const nextFrom = edge.to;
-        edge.to = edge.from;
-        edge.from = nextFrom;
-        persistState();
-        render();
-      });
-      root.querySelector('#delete-edge-btn').addEventListener('click', () => deleteEdge(edge.id));
-      return;
-    }
-
-    const node = findNode(state.selectedId);
-    if (!node) {
-      root.innerHTML = `<div class="inspector-empty">Select a status or action node to edit it. Status nodes export under <code>statuses:</code>. Action nodes export into transition <code>actions:</code> based on the path between statuses.</div>`;
-      return;
-    }
-
-    const isStatus = node.type === 'status';
-    const parsedRule = parseValidationRule(node.rule);
-    const ruleMeta = validationRuleMeta(node.rule) || VALIDATION_RULES[0];
-    const fieldMeta = setFieldMeta(node.field) || SET_FIELD_OPTIONS[0];
-    root.innerHTML = `
-      <div class="inspector-section">
-        <div class="inspector-chip-row">
-          <span class="inspector-mini-chip">${escapeHTML(typeMeta(node.type).title)}</span>
-        </div>
-
-        <label class="inspector-label">${isStatus ? 'Status Name' : 'Node Title'}</label>
-        <input class="inspector-input" id="field-title" value="${escapeAttr(node.title)}">
-
-        ${isStatus ? `
-          <label class="inspector-label">Description</label>
-          <textarea class="inspector-textarea" id="field-description">${escapeHTML(node.description || '')}</textarea>
-        ` : ''}
-
-        ${node.type === 'validate' ? `
-          <label class="inspector-label">Validation Rule</label>
-          <select class="inspector-select" id="field-rule-type">
-            ${VALIDATION_RULES.map(item => `<option value="${item.value}" ${item.value === (parsedRule.type || ruleMeta.value) ? 'selected' : ''}>${item.label}</option>`).join('')}
-          </select>
-          <div class="inspector-help">${escapeHTML(ruleMeta.description)}</div>
-          ${ruleMeta.argLabel ? `
-            <label class="inspector-label">${escapeHTML(ruleMeta.argLabel)}</label>
-            <input class="inspector-input" id="field-rule-arg" value="${escapeAttr(parsedRule.arg || '')}" placeholder="${escapeAttr(ruleMeta.argPlaceholder || '')}">
-          ` : ''}
-        ` : ''}
-
-        ${node.type === 'append_section' ? `
-          <label class="inspector-label">Section Title</label>
-          <input class="inspector-input" id="field-title-text" value="${escapeAttr(node.titleText || '')}" placeholder="Implementation">
-          <label class="inspector-label">Body</label>
-          <textarea class="inspector-textarea" id="field-body">${escapeHTML(node.body || '')}</textarea>
-        ` : ''}
-
-        ${node.type === 'inject_prompt' ? `
-          <label class="inspector-label">Prompt</label>
-          <textarea class="inspector-textarea" id="field-prompt">${escapeHTML(node.prompt || '')}</textarea>
-        ` : ''}
-
-        ${node.type === 'approval' ? `
-          <label class="inspector-label">Approved Status</label>
-          <input class="inspector-input" id="field-status" value="${escapeAttr(node.status || '')}" placeholder="backlog">
-        ` : ''}
-
-        ${node.type === 'set_fields' ? `
-          <label class="inspector-label">Field</label>
-          <select class="inspector-select" id="field-field">
-            ${SET_FIELD_OPTIONS.map(item => `<option value="${item.value}" ${item.value === (node.field || fieldMeta.value) ? 'selected' : ''}>${item.label}</option>`).join('')}
-          </select>
-          <div class="inspector-help">${escapeHTML(fieldMeta.description)}</div>
-          <label class="inspector-label">Value</label>
-          <input class="inspector-input" id="field-value" value="${escapeAttr(node.value || '')}">
-        ` : ''}
-      </div>
-
-      <div class="inspector-section">
-        <div class="inspector-row">
-          <div>
-            <label class="inspector-label">X</label>
-            <input class="inspector-input" id="field-x" type="number" value="${Math.round(node.x)}">
-          </div>
-          <div>
-            <label class="inspector-label">Y</label>
-            <input class="inspector-input" id="field-y" type="number" value="${Math.round(node.y)}">
-          </div>
-        </div>
-      </div>
-
-      <div class="inspector-section">
-        <button class="designer-btn" id="duplicate-node-btn">Duplicate Node</button>
-        <button class="designer-btn" id="delete-node-btn">Delete Node</button>
-      </div>
-    `;
-
-    root.querySelectorAll('input, textarea, select').forEach(field => {
-      field.addEventListener('input', () => {
-        const nextRuleType = root.querySelector('#field-rule-type')?.value || parsedRule.type || '';
-        const nextRuleArg = root.querySelector('#field-rule-arg')?.value || '';
-        node.title = root.querySelector('#field-title')?.value || node.title;
-        node.description = root.querySelector('#field-description')?.value || '';
-        node.rule = composeValidationRule(nextRuleType, nextRuleArg);
-        node.titleText = root.querySelector('#field-title-text')?.value || '';
-        node.body = root.querySelector('#field-body')?.value || '';
-        node.prompt = root.querySelector('#field-prompt')?.value || '';
-        node.status = root.querySelector('#field-status')?.value || '';
-        node.field = root.querySelector('#field-field')?.value || '';
-        node.value = root.querySelector('#field-value')?.value || '';
-        node.x = Number(root.querySelector('#field-x')?.value) || node.x;
-        node.y = Number(root.querySelector('#field-y')?.value) || node.y;
-        persistState();
-        render();
-      });
-    });
-
-    root.querySelector('#duplicate-node-btn').addEventListener('click', () => {
-      const copy = normalizeNode(JSON.parse(JSON.stringify(node)));
-      copy.id = makeId(copy.type);
-      copy.x += 42;
-      copy.y += 36;
-      state.nodes.push(copy);
-      state.selectedId = copy.id;
-      persistState();
-      render();
-    });
-    root.querySelector('#delete-node-btn').addEventListener('click', () => deleteNode(node.id));
-  }
-
-  function showToast(message, isError) {
-    const toast = document.getElementById('designer-toast');
-    toast.textContent = message;
-    toast.className = 'designer-toast show' + (isError ? ' error' : '');
-    logEvent(isError ? 'error' : 'info', message);
-    clearTimeout(showToast.timer);
-    showToast.timer = setTimeout(() => {
-      toast.className = 'designer-toast';
-    }, 2400);
-  }
-
-  function updateZoom(nextZoom) {
-    state.zoom = Math.min(1.8, Math.max(0.5, Math.round(nextZoom * 100) / 100));
-    persistState();
-    renderViewport();
-  }
-
-  function renderViewport() {
-    const scene = document.getElementById('canvas-scene');
-    const stage = document.getElementById('canvas-stage');
-    scene.style.transform = `scale(${state.zoom})`;
-    stage.style.minWidth = Math.max(1400, Math.ceil(1400 * state.zoom)) + 'px';
-    stage.style.minHeight = Math.max(900, Math.ceil(900 * state.zoom)) + 'px';
-    document.getElementById('zoom-readout').textContent = Math.round(state.zoom * 100) + '%';
-    document.getElementById('minimap-scale').textContent = state.zoom.toFixed(2) + 'x';
-    renderMinimap();
-  }
-
-  function renderMinimap() {
-    const root = document.getElementById('minimap-canvas');
-    const wrap = document.getElementById('canvas-wrap');
-    const width = root.clientWidth || 210;
-    const height = root.clientHeight || 117;
-    if (!state.nodes.length) {
-      root.innerHTML = '';
-      return;
-    }
-
-    const minX = Math.min(...state.nodes.map(node => node.x));
-    const minY = Math.min(...state.nodes.map(node => node.y));
-    const maxX = Math.max(...state.nodes.map(node => node.x + 250));
-    const maxY = Math.max(...state.nodes.map(node => node.y + 140));
-    const contentWidth = Math.max(1, maxX - minX + 40);
-    const contentHeight = Math.max(1, maxY - minY + 40);
-    const scale = Math.min(width / contentWidth, height / contentHeight);
-    const offsetX = (width - contentWidth * scale) / 2;
-    const offsetY = (height - contentHeight * scale) / 2;
-
-    root.innerHTML = state.nodes.map(node => {
-      const left = offsetX + (node.x - minX + 20) * scale;
-      const top = offsetY + (node.y - minY + 20) * scale;
-      return `<div class="minimap-node ${node.id === state.selectedId ? 'selected' : ''}" style="left:${left}px;top:${top}px;width:${Math.max(10, 236 * scale)}px;height:${Math.max(8, 96 * scale)}px;background:${colorForType(node.type)}"></div>`;
-    }).join('') + `<div class="minimap-viewport"></div>`;
-
-    const viewport = root.querySelector('.minimap-viewport');
-    viewport.style.left = `${offsetX + ((wrap.scrollLeft / state.zoom) - minX + 20) * scale}px`;
-    viewport.style.top = `${offsetY + ((wrap.scrollTop / state.zoom) - minY + 20) * scale}px`;
-    viewport.style.width = `${Math.min(width, (wrap.clientWidth / state.zoom) * scale)}px`;
-    viewport.style.height = `${Math.min(height, (wrap.clientHeight / state.zoom) * scale)}px`;
-
-    root.onpointerdown = event => {
-      event.preventDefault();
-      const rect = root.getBoundingClientRect();
-      const updateViewport = clientEvent => {
-        const point = pointToViewportFromMinimap(clientEvent.clientX - rect.left, clientEvent.clientY - rect.top, scale, minX, minY, offsetX, offsetY);
-        wrap.scrollTo({
-          left: Math.max(0, point.sceneX * state.zoom - wrap.clientWidth / 2),
-          top: Math.max(0, point.sceneY * state.zoom - wrap.clientHeight / 2),
-          behavior: 'auto',
+  function applyInspectorChanges() {
+    if (!state.selected) return;
+    if (state.selected.kind === 'status') {
+      const status = state.workflow.statuses[state.selected.statusIndex];
+      const oldName = status.name;
+      const nextName = document.getElementById('status-name-input')?.value.trim() || status.name;
+      status.name = nextName;
+      status.description = document.getElementById('status-description-input')?.value.trim() || '';
+      if (nextName !== oldName) {
+        state.workflow.transitions.forEach(transition => {
+          if (transition.from === oldName) transition.from = nextName;
+          if (transition.to === oldName) transition.to = nextName;
         });
-      };
-      updateViewport(event);
-      root.setPointerCapture?.(event.pointerId);
-      root.onpointermove = moveEvent => updateViewport(moveEvent);
-      root.onpointerup = upEvent => {
-        root.onpointermove = null;
-        root.onpointerup = null;
-        root.releasePointerCapture?.(upEvent.pointerId);
-      };
-    };
-  }
-
-  async function saveWorkflowToProject() {
-    const yaml = workflowToYAML(draftToWorkflow());
-    try {
-      const res = await fetch(SAVE_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ yaml }),
-      });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(payload.error || 'Save failed');
-      showToast(`Workflow saved to ${payload.path || 'workflow.yaml'}`, false);
-      logEvent('save', `Saved workflow to ${payload.path || 'workflow.yaml'}`);
-    } catch (error) {
-      showToast(error.message || 'Save failed', true);
+        Object.keys(state.workflow.systems).forEach(name => {
+          state.workflow.systems[name].transitions.forEach(transition => {
+            if (transition.from === oldName) transition.from = nextName;
+            if (transition.to === oldName) transition.to = nextName;
+          });
+        });
+      }
     }
-  }
-
-  async function reloadWorkflowFromServer() {
-    try {
-      const res = await fetch(DATA_URL, { headers: { Accept: 'application/json' } });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(payload.error || 'Failed to reload workflow');
-      const next = workflowToDraft(payload.workflow || {});
-      state.nodes = next.nodes;
-      state.edges = next.edges;
-      state.systems = next.systems;
-      state.zoom = 1;
-      state.selectedId = state.nodes[0]?.id || null;
-      state.selectedEdgeId = null;
-      state.connectFrom = null;
-      state.connectDrag = null;
-      localStorage.removeItem(STORAGE_KEY);
-      const sourceBadge = document.getElementById('workflow-source-badge');
-      const targetBadge = document.getElementById('workflow-target-badge');
-      if (sourceBadge && payload.source) sourceBadge.textContent = payload.source;
-      if (targetBadge && payload.target) targetBadge.textContent = payload.target;
-      logEvent('load', `Reloaded workflow from server file source ${payload.source || 'unknown'}`);
-      render();
-      showToast(`Reloaded workflow from ${payload.source || 'server'}`, false);
-    } catch (error) {
-      showToast(error.message || 'Failed to reload workflow', true);
+    if (state.selected.kind === 'action') {
+      const transition = getSelectedTransition(false);
+      if (!transition) return;
+      const action = transition.actions[state.selected.actionIndex];
+      if (!action) return;
+      if (action.type === 'validate') {
+        const type = document.getElementById('action-validation-type')?.value || '';
+        const arg = document.getElementById('action-validation-arg')?.value || '';
+        action.rule = composeValidationRule(type, arg);
+      }
+      if (action.type === 'append_section') {
+        action.title = document.getElementById('action-title-input')?.value.trim() || '';
+        action.body = document.getElementById('action-body-input')?.value.replace(/\r/g, '').trim();
+      }
+      if (action.type === 'inject_prompt') {
+        action.prompt = document.getElementById('action-prompt-input')?.value.replace(/\r/g, '').trim();
+      }
+      if (action.type === 'require_human_approval') {
+        action.status = document.getElementById('action-approval-status')?.value || '';
+      }
+      if (action.type === 'set_fields') {
+        action.field = document.getElementById('action-field-select')?.value || '';
+        action.value = document.getElementById('action-field-value')?.value ?? '';
+      }
     }
-  }
-
-  function render() {
-    renderPalette();
-    renderReadiness();
-    renderDebug();
-    renderNodes();
-    renderEdges();
-    renderInspector();
-    document.getElementById('connect-mode-btn').classList.toggle('active', Boolean(state.connectFrom));
-    document.getElementById('canvas-hint').style.display = state.nodes.length ? '' : 'none';
-    renderViewport();
-  }
-
-  document.getElementById('save-workflow-btn').addEventListener('click', saveWorkflowToProject);
-  document.getElementById('add-status-btn').addEventListener('click', () => addNode('status'));
-  document.getElementById('connect-mode-btn').addEventListener('click', () => {
-    state.connectFrom = state.connectFrom ? null : state.selectedId;
-    if (state.connectFrom) state.selectedEdgeId = null;
-    render();
-  });
-  document.getElementById('auto-layout-btn').addEventListener('click', () => {
-    const statuses = statusNodesInOrder();
-    const paths = collectTransitionPaths();
-    const positionedActionNodes = new Set();
-
-    statuses.forEach((node, index) => {
-      node.x = 120 + index * 280;
-      node.y = 150;
-    });
-
-    paths.forEach((path, pathIndex) => {
-      const fromNode = findNode(path.fromId);
-      const toNode = findNode(path.toId);
-      if (!fromNode || !toNode || !path.actionNodeIds.length) return;
-
-      const span = Math.max(180, toNode.x - fromNode.x);
-      const laneY = 360 + pathIndex * 140;
-      path.actionNodeIds.forEach((nodeId, actionIndex) => {
-        const node = findNode(nodeId);
-        if (!node || positionedActionNodes.has(node.id)) return;
-        node.x = fromNode.x + ((actionIndex + 1) * span) / (path.actionNodeIds.length + 1);
-        node.y = laneY;
-        positionedActionNodes.add(node.id);
-      });
-    });
-
-    const unpositioned = state.nodes
-      .filter(node => node.type !== 'status' && !positionedActionNodes.has(node.id))
-      .sort((a, b) => a.x - b.x);
-
-    unpositioned.forEach((node, index) => {
-      node.x = 180 + (index % 4) * 220;
-      node.y = 360 + (paths.length + Math.floor(index / 4)) * 140;
-    });
-
-    logEvent('layout', `Auto-laid out ${statuses.length} statuses across ${paths.length} transition paths`);
     persistState();
     render();
-  });
-  document.getElementById('focus-selection-btn').addEventListener('click', () => {
-    const wrap = document.getElementById('canvas-wrap');
-    const node = findNode(state.selectedId);
-    if (node) {
-      wrap.scrollTo({ left: Math.max(0, node.x - 180), top: Math.max(0, node.y - 140), behavior: 'smooth' });
-      return;
-    }
-    const edge = findEdge(state.selectedEdgeId);
-    if (!edge) return;
-    const from = findNode(edge.from);
-    const to = findNode(edge.to);
-    if (!from || !to) return;
-    wrap.scrollTo({ left: Math.max(0, ((from.x + to.x) / 2) - 220), top: Math.max(0, ((from.y + to.y) / 2) - 160), behavior: 'smooth' });
-  });
-  document.getElementById('clear-local-btn').addEventListener('click', () => {
-    localStorage.removeItem(STORAGE_KEY);
-    logEvent('warn', 'Cleared local draft');
-    loadState();
-    render();
-  });
-  document.getElementById('zoom-in-btn').addEventListener('click', () => updateZoom(state.zoom + 0.1));
-  document.getElementById('zoom-out-btn').addEventListener('click', () => updateZoom(state.zoom - 0.1));
-  document.getElementById('zoom-reset-btn').addEventListener('click', () => updateZoom(1));
-  document.getElementById('reset-btn').addEventListener('click', () => {
-    logEvent('warn', 'Requested reload from server file');
-    reloadWorkflowFromServer();
-  });
-  document.getElementById('import-btn').addEventListener('click', () => {
-    showModal('Import Workflow', INITIAL_YAML || workflowToYAML(draftToWorkflow()), 'workflow.yaml', 'import');
-  });
-  document.getElementById('export-json-btn').addEventListener('click', () => {
-    showModal('Export Draft JSON', JSON.stringify({ version: 3, nodes: state.nodes, edges: state.edges, systems: state.systems }, null, 2), 'workflow-designer-draft.json', 'export');
-  });
-  document.getElementById('export-yaml-btn').addEventListener('click', () => {
-    showModal('Export Workflow YAML', workflowToYAML(draftToWorkflow()), 'workflow.yaml', 'export');
-  });
-  document.getElementById('close-modal-btn').addEventListener('click', closeModal);
-  document.getElementById('copy-modal-btn').addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(document.getElementById('modal-text').value);
-    } catch (_) {}
-  });
-  document.getElementById('pick-file-btn').addEventListener('click', () => {
-    document.getElementById('workflow-file-input').click();
-  });
-  document.getElementById('workflow-file-input').addEventListener('change', event => {
-    const file = event.target.files && event.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      document.getElementById('modal-text').value = String(reader.result || '');
-      logEvent('import', `Loaded file ${file.name} into import modal`);
-      showToast(`Loaded ${file.name}`, false);
-    };
-    reader.onerror = () => {
-      showToast(`Failed to read ${file.name}`, true);
-    };
-    reader.readAsText(file);
-    event.target.value = '';
-  });
-  document.getElementById('download-modal-btn').addEventListener('click', () => {
-    const text = document.getElementById('modal-text').value;
-    if (exportState.mode === 'import') {
-      try {
-        importDraft(text);
-        closeModal();
-      } catch (error) {
-        logEvent('error', `Import failed: ${error.message}`);
-        alert('Import failed: ' + error.message);
-      }
-      return;
-    }
-    downloadText(exportState.filename || 'workflow.txt', text);
-  });
-  document.getElementById('export-modal').addEventListener('click', event => {
-    if (event.target.id === 'export-modal') closeModal();
-  });
-  document.getElementById('canvas-wrap').addEventListener('click', event => {
-    if (event.target.closest('.workflow-node') || event.target.closest('[data-edge-id]')) return;
-    state.selectedId = null;
-    state.selectedEdgeId = null;
-    state.connectFrom = null;
-    state.connectDrag = null;
-    render();
-  });
-  document.getElementById('canvas-wrap').addEventListener('pointerdown', event => {
-    if (event.button !== 0) return;
-    if (event.target.closest('.workflow-node') || event.target.closest('[data-edge-id]') || event.target.closest('.minimap') || event.target.closest('.canvas-toolbar')) return;
-    event.preventDefault();
-    const wrap = event.currentTarget;
-    state.pan = {
-      startX: event.clientX,
-      startY: event.clientY,
-      scrollLeft: wrap.scrollLeft,
-      scrollTop: wrap.scrollTop,
-    };
-    wrap.classList.add('panning');
-    wrap.setPointerCapture?.(event.pointerId);
-  });
-  document.getElementById('canvas-wrap').addEventListener('pointermove', event => {
-    if (!state.pan) return;
-    event.preventDefault();
-    const wrap = event.currentTarget;
-    wrap.scrollLeft = state.pan.scrollLeft - (event.clientX - state.pan.startX);
-    wrap.scrollTop = state.pan.scrollTop - (event.clientY - state.pan.startY);
-    renderMinimap();
-  });
-  document.getElementById('canvas-wrap').addEventListener('pointerup', event => {
-    if (!state.pan) return;
-    const wrap = event.currentTarget;
-    state.pan = null;
-    wrap.classList.remove('panning');
-    wrap.releasePointerCapture?.(event.pointerId);
-  });
-  document.getElementById('canvas-wrap').addEventListener('scroll', renderMinimap);
+  }
 
-  renderPalette();
+  function bindEvents() {
+    document.getElementById('save-workflow-btn').addEventListener('click', saveWorkflow);
+    document.getElementById('reset-btn').addEventListener('click', reloadFromServer);
+    document.getElementById('import-btn').addEventListener('click', () => showModal('Import Workflow', INITIAL_YAML || workflowToYAML(state.workflow), 'workflow.yaml', 'import'));
+    document.getElementById('export-json-btn').addEventListener('click', () => showModal('Export Workflow JSON', JSON.stringify(simplifyWorkflow(state.workflow), null, 2), 'workflow.json', 'export'));
+    document.getElementById('export-yaml-btn').addEventListener('click', () => showModal('Export Workflow YAML', workflowToYAML(state.workflow), 'workflow.yaml', 'export'));
+    document.getElementById('add-status-btn').addEventListener('click', addStatus);
+    document.getElementById('auto-layout-btn').addEventListener('click', () => {
+      document.getElementById('canvas-wrap').scrollTo({ left: 0, top: 0, behavior: 'smooth' });
+      showToast('View reset to the start of the workflow', false);
+    });
+    document.getElementById('focus-selection-btn').addEventListener('click', focusSelection);
+    document.getElementById('clear-local-btn').addEventListener('click', () => {
+      clearLocalDraft();
+      render();
+    });
+    document.getElementById('close-modal-btn').addEventListener('click', closeModal);
+    document.getElementById('pick-file-btn').addEventListener('click', () => document.getElementById('workflow-file-input').click());
+    document.getElementById('workflow-file-input').addEventListener('change', async event => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      const text = await file.text();
+      document.getElementById('modal-text').value = text;
+    });
+    document.getElementById('copy-modal-btn').addEventListener('click', async () => {
+      const text = document.getElementById('modal-text').value;
+      if (exportState.mode === 'import') {
+        try {
+          importWorkflowText(text);
+          closeModal();
+        } catch (error) {
+          logEvent('error', `Import failed: ${error.message}`);
+          showToast(error.message, true);
+        }
+        return;
+      }
+      await navigator.clipboard.writeText(text);
+      showToast('Copied to clipboard', false);
+    });
+    document.getElementById('download-modal-btn').addEventListener('click', () => {
+      const blob = new Blob([document.getElementById('modal-text').value], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = exportState.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    });
+
+    document.getElementById('palette-root').addEventListener('click', event => {
+      const button = event.target.closest('[data-add-action]');
+      if (!button) return;
+      addAction(button.getAttribute('data-add-action'));
+    });
+
+    document.getElementById('starter-root').addEventListener('click', event => {
+      if (event.target.closest('#add-system-btn')) {
+        addSystem();
+        return;
+      }
+      const systemButton = event.target.closest('[data-select-system]');
+      if (systemButton) {
+        focusTransition(systemButton.getAttribute('data-select-system'));
+      }
+    });
+
+    document.getElementById('canvas-scene').addEventListener('click', event => {
+      const statusButton = event.target.closest('[data-select-status]');
+      if (statusButton) {
+        selectStatus(Number(statusButton.getAttribute('data-select-status')));
+        return;
+      }
+      const quickAdd = event.target.closest('[data-add-action-here]');
+      if (quickAdd) {
+        const [from, to, systemName] = quickAdd.getAttribute('data-add-action-here').split('|');
+        selectTransition(from, to, systemName);
+        addAction('validate', { from, to, system: systemName });
+        return;
+      }
+      const actionButton = event.target.closest('[data-select-action]');
+      if (actionButton) {
+        const [from, to, actionIndex, systemName] = actionButton.getAttribute('data-select-action').split('|');
+        selectAction(from, to, Number(actionIndex), systemName);
+        return;
+      }
+      const transitionButton = event.target.closest('[data-select-transition]');
+      if (transitionButton) {
+        const [from, to, systemName] = transitionButton.getAttribute('data-select-transition').split('|');
+        selectTransition(from, to, systemName);
+        return;
+      }
+      const deleteSystemButton = event.target.closest('[data-delete-system]');
+      if (deleteSystemButton) {
+        deleteSystem(deleteSystemButton.getAttribute('data-delete-system'));
+        return;
+      }
+      const jumpButton = event.target.closest('[data-jump-system]');
+      if (jumpButton) {
+        focusTransition(jumpButton.getAttribute('data-jump-system'));
+      }
+    });
+
+    document.getElementById('inspector-root').addEventListener('click', event => {
+      if (event.target.closest('#move-status-left-btn')) return moveStatus(-1);
+      if (event.target.closest('#move-status-right-btn')) return moveStatus(1);
+      if (event.target.closest('#duplicate-status-btn')) return duplicateStatus();
+      if (event.target.closest('#delete-status-btn')) return deleteStatus();
+      if (event.target.closest('#move-action-up-btn')) return moveAction(-1);
+      if (event.target.closest('#move-action-down-btn')) return moveAction(1);
+      if (event.target.closest('#delete-action-btn')) return deleteAction();
+      const actionAdd = event.target.closest('[data-add-action]');
+      if (actionAdd) return addAction(actionAdd.getAttribute('data-add-action'));
+      const actionPick = event.target.closest('[data-select-action]');
+      if (actionPick) {
+        const [from, to, actionIndex, systemName] = actionPick.getAttribute('data-select-action').split('|');
+        selectAction(from, to, Number(actionIndex), systemName);
+      }
+    });
+
+    document.getElementById('inspector-root').addEventListener('change', applyInspectorChanges);
+  }
+
   loadState();
+  bindEvents();
   render();
 })();
