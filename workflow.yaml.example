@@ -1,28 +1,40 @@
-# Workflow template — defines statuses, validation rules, and per-status templates.
-# Each status can have:
+# Workflow template
+#
+# The lifecycle order still comes from `statuses`, but the transition behavior
+# now comes from `transitions`. The CLI should only expose and enforce what is
+# declared here.
+#
+# Status fields:
 #   - name: status identifier (used in issue frontmatter)
 #   - description: shown in board column headers
-#   - template: markdown appended to issue body on transition INTO this status
-#   - validation: list of checks run BEFORE transition is allowed
+#   - template: optional markdown seeded when an issue is created in that status
 #
-# Available validation rules:
-#   - body_not_empty          — issue body must not be empty
-#   - has_checkboxes          — body must contain at least one checkbox
-#   - has_assignee            — issue must have an assignee
-#   - all_checkboxes_checked  — all checkboxes must be checked
-#   - section_checkboxes_checked: X — all checkboxes under ## X must be checked
-#   - has_test_plan           — body must have ## Test Plan with ### Automated and ### Manual
-#   - has_comment_prefix: X   — a comment must start with prefix X
+# Transition action types:
+#   - validate:
+#       rule: body_not_empty | has_checkboxes | has_assignee | all_checkboxes_checked
+#             | section_checkboxes_checked: X | has_test_plan | has_comment_prefix: X
+#   - require_human_approval:
+#       status: status that must already be present in `approved_for` frontmatter
+#   - append_section:
+#       title: section heading to create or reuse
+#       body: markdown appended inside that section
+#   - inject_prompt:
+#       prompt: extra guidance surfaced for the next transition
+#   - set_fields:
+#       field: assignee | approved_for | priority | status
+#       value: scalar string to set (empty string clears the field)
 #
-# Reference this file from projects.yaml:
-#   projects:
-#     - name: "My Project"
-#       issues: "./issues"
-#       workflow: "./workflow.yaml"
+# Optional subsystem overlays:
+#   systems:
+#     Combat:
+#       transitions:
+#         - from: "backlog"
+#           to: "in progress"
+#           actions:
+#             - type: inject_prompt
+#               prompt: "Cover balance and regression risks for combat calculations."
 
 statuses:
-  - name: "none"
-
   - name: "idea"
     description: "Raw idea, needs exploration"
     template: |
@@ -38,47 +50,115 @@ statuses:
       - [ ] Acceptance criteria defined as checkboxes
       - [ ] Dependencies identified
       - [ ] Approach documented
-    validation:
-      - body_not_empty
 
   - name: "backlog"
     description: "Ready to work on"
-    validation:
-      - has_checkboxes
 
   - name: "in progress"
     description: "Actively being implemented"
-    template: |
-      ## Implementation
-      - [ ] Code changes complete
-      - [ ] Unit tests written
-      - [ ] Integration tests written (if applicable)
-      - [ ] Test plan section added (## Test Plan with ### Automated and ### Manual)
-    validation:
-      - has_assignee
 
   - name: "testing"
     description: "Under verification"
-    template: |
-      ## Testing
-      - [ ] All tests passing
-      - [ ] Test results logged as comment (issue-cli comment <slug> --text "tests: ...")
-    validation:
-      - "section_checkboxes_checked: Implementation"
+
+  - name: "human-testing"
+    description: "Manual verification by humans"
 
   - name: "documentation"
     description: "Being documented"
-    template: |
-      ## Documentation
-      - [ ] User-facing docs updated
-      - [ ] Docs logged as comment (issue-cli comment <slug> --text "docs: ...")
-    validation:
-      - "section_checkboxes_checked: Testing"
-      - has_test_plan
-      - "has_comment_prefix: tests:"
 
   - name: "done"
     description: "Completed"
-    validation:
-      - "section_checkboxes_checked: Documentation"
-      - "has_comment_prefix: docs:"
+
+transitions:
+  - from: "idea"
+    to: "in design"
+    actions:
+      - type: validate
+        rule: body_not_empty
+
+  - from: "in design"
+    to: "backlog"
+    actions:
+      - type: validate
+        rule: has_checkboxes
+      - type: require_human_approval
+        status: backlog
+      - type: inject_prompt
+        prompt: "Stop after backlog if the issue still needs human direction or approval."
+      - type: set_fields
+        field: assignee
+        value: ""
+
+  - from: "backlog"
+    to: "in progress"
+    actions:
+      - type: validate
+        rule: has_assignee
+      - type: append_section
+        title: Implementation
+        body: |
+          - [ ] Code changes complete
+          - [ ] Tests written or updated
+      - type: append_section
+        title: Test Plan
+        body: |
+          ### Automated
+          - [ ] Automated verification recorded
+
+          ### Manual
+          - [ ] Manual verification listed if needed
+      - type: inject_prompt
+        prompt: "Implement the change and keep the Implementation section accurate as work progresses."
+
+  - from: "in progress"
+    to: "testing"
+    actions:
+      - type: validate
+        rule: all_checkboxes_checked
+      - type: append_section
+        title: Testing
+        body: |
+          - [ ] All tests passing
+          - [ ] Test results logged as comment (`issue-cli comment <slug> --text "tests: ..."`)
+      - type: inject_prompt
+        prompt: "Run the relevant test suite, record results, and capture any remaining manual checks."
+
+  - from: "testing"
+    to: "human-testing"
+    actions:
+      - type: validate
+        rule: has_test_plan
+      - type: validate
+        rule: "has_comment_prefix: tests:"
+      - type: append_section
+        title: Human Testing
+        body: |
+          - [ ] Human verification complete if required
+
+  - from: "human-testing"
+    to: "documentation"
+    actions:
+      - type: require_human_approval
+        status: documentation
+      - type: append_section
+        title: Documentation
+        body: |
+          - [ ] User-facing docs updated if behavior changed
+          - [ ] Docs comment added (`issue-cli comment <slug> --text "docs: ..."`)
+
+  - from: "documentation"
+    to: "done"
+    actions:
+      - type: validate
+        rule: "has_comment_prefix: docs:"
+      - type: require_human_approval
+        status: done
+
+systems:
+  Combat:
+    transitions:
+      - from: "backlog"
+        to: "in progress"
+        actions:
+          - type: inject_prompt
+            prompt: "Check combat edge cases, balance implications, and regression coverage before closing implementation."

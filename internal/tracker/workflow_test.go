@@ -3,6 +3,7 @@ package tracker
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -188,6 +189,40 @@ func TestAppendTemplate(t *testing.T) {
 	})
 }
 
+func TestAppendToSection(t *testing.T) {
+	t.Run("creates section when missing", func(t *testing.T) {
+		body, changed := appendToSection("## Existing\n- item", "Testing", "- [ ] add test")
+		if !changed {
+			t.Fatal("expected section append")
+		}
+		want := "## Existing\n- item\n\n## Testing\n- [ ] add test\n"
+		if body != want {
+			t.Errorf("body = %q, want %q", body, want)
+		}
+	})
+
+	t.Run("reuses existing section", func(t *testing.T) {
+		body, changed := appendToSection("## Testing\n- [ ] existing", "Testing", "- [ ] new item")
+		if !changed {
+			t.Fatal("expected section reuse append")
+		}
+		want := "## Testing\n- [ ] existing\n\n- [ ] new item"
+		if body != want {
+			t.Errorf("body = %q, want %q", body, want)
+		}
+	})
+
+	t.Run("does not duplicate identical content", func(t *testing.T) {
+		body, changed := appendToSection("## Testing\n- [ ] same", "Testing", "- [ ] same")
+		if changed {
+			t.Fatal("expected no change for duplicate content")
+		}
+		if body != "## Testing\n- [ ] same" {
+			t.Errorf("body changed: %q", body)
+		}
+	})
+}
+
 func TestValidate(t *testing.T) {
 	wf := DefaultWorkflow()
 
@@ -208,7 +243,7 @@ func TestValidate(t *testing.T) {
 	})
 
 	t.Run("has_checkboxes passes", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "- [ ] task 1"}
+		issue := &Issue{BodyRaw: "- [ ] task 1", ApprovedFor: "backlog"}
 		err := wf.Validate(issue, "backlog", nil)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
@@ -216,10 +251,26 @@ func TestValidate(t *testing.T) {
 	})
 
 	t.Run("has_checkboxes fails", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "No checkboxes here"}
+		issue := &Issue{BodyRaw: "No checkboxes here", ApprovedFor: "backlog"}
 		err := wf.Validate(issue, "backlog", nil)
 		if err == nil {
 			t.Fatal("expected error")
+		}
+	})
+
+	t.Run("approved_for blocks backlog", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "- [ ] task 1"}
+		err := wf.Validate(issue, "backlog", nil)
+		if err == nil {
+			t.Fatal("expected error for missing approval")
+		}
+	})
+
+	t.Run("approved_for wrong status", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "- [ ] task 1", ApprovedFor: "testing"}
+		err := wf.Validate(issue, "backlog", nil)
+		if err == nil {
+			t.Fatal("expected error for wrong approval status")
 		}
 	})
 
@@ -338,8 +389,16 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("documentation has no validation", func(t *testing.T) {
+	t.Run("documentation requires approval", func(t *testing.T) {
 		issue := &Issue{BodyRaw: "content"}
+		err := wf.Validate(issue, "documentation", nil)
+		if err == nil {
+			t.Fatal("expected error for missing approval")
+		}
+	})
+
+	t.Run("documentation passes with approval", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "content", ApprovedFor: "documentation"}
 		err := wf.Validate(issue, "documentation", nil)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
@@ -347,7 +406,7 @@ func TestValidate(t *testing.T) {
 	})
 
 	t.Run("has_comment_prefix docs: passes for done", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "content"}
+		issue := &Issue{BodyRaw: "content", ApprovedFor: "done"}
 		comments := []Comment{{Text: "docs: updated docs"}}
 		err := wf.Validate(issue, "done", comments)
 		if err != nil {
@@ -356,11 +415,20 @@ func TestValidate(t *testing.T) {
 	})
 
 	t.Run("has_comment_prefix docs: fails for done", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "content"}
+		issue := &Issue{BodyRaw: "content", ApprovedFor: "done"}
 		comments := []Comment{{Text: "some other comment"}}
 		err := wf.Validate(issue, "done", comments)
 		if err == nil {
 			t.Fatal("expected error")
+		}
+	})
+
+	t.Run("done requires approval", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "content"}
+		comments := []Comment{{Text: "docs: updated docs"}}
+		err := wf.Validate(issue, "done", comments)
+		if err == nil {
+			t.Fatal("expected error for missing approval")
 		}
 	})
 
@@ -371,6 +439,74 @@ func TestValidate(t *testing.T) {
 			t.Fatal("expected error for unknown status")
 		}
 	})
+}
+
+func TestValidateTransition_WithActions(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "backlog"},
+			{Name: "in progress"},
+		},
+		Transitions: []WorkflowTransition{
+			{
+				From: "backlog",
+				To:   "in progress",
+				Actions: []WorkflowAction{
+					{Type: "validate", Rule: "has_assignee"},
+					{Type: "require_human_approval", Status: "in progress"},
+				},
+			},
+		},
+	}
+
+	err := wf.ValidateTransition(&Issue{Slug: "x", Assignee: "alice"}, "backlog", "in progress", nil)
+	if err == nil {
+		t.Fatal("expected missing approval to fail")
+	}
+
+	err = wf.ValidateTransition(&Issue{Slug: "x", Assignee: "alice", ApprovedFor: "in progress"}, "backlog", "in progress", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestApplyTransition(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "backlog"},
+			{Name: "in progress"},
+		},
+		Transitions: []WorkflowTransition{
+			{
+				From: "backlog",
+				To:   "in progress",
+				Actions: []WorkflowAction{
+					{Type: "append_section", Title: "Implementation", Body: "- [ ] Code complete"},
+					{Type: "inject_prompt", Prompt: "Implement carefully"},
+					{Type: "set_fields", Field: "assignee", Value: ""},
+				},
+			},
+		},
+	}
+
+	issue := &Issue{BodyRaw: "Existing", ApprovedFor: "in progress"}
+	result := wf.ApplyTransition(issue, "backlog", "in progress")
+
+	if result.Update.Status == nil || *result.Update.Status != "in progress" {
+		t.Fatalf("status update = %#v", result.Update.Status)
+	}
+	if result.Update.Assignee == nil || *result.Update.Assignee != "" {
+		t.Fatalf("assignee update = %#v", result.Update.Assignee)
+	}
+	if result.Update.ApprovedFor == nil || *result.Update.ApprovedFor != "" {
+		t.Fatalf("approved_for update = %#v", result.Update.ApprovedFor)
+	}
+	if result.Update.Body == nil || !strings.Contains(*result.Update.Body, "## Implementation") {
+		t.Fatalf("body update missing implementation section: %#v", result.Update.Body)
+	}
+	if len(result.InjectedPrompts) != 1 || result.InjectedPrompts[0] != "Implement carefully" {
+		t.Fatalf("unexpected prompts: %#v", result.InjectedPrompts)
+	}
 }
 
 func TestNextStatus(t *testing.T) {
@@ -404,12 +540,24 @@ func TestLoadWorkflow(t *testing.T) {
 	content := `statuses:
   - name: "todo"
     description: "To do"
-    validation:
-      - body_not_empty
   - name: "doing"
     description: "In progress"
   - name: "done"
     description: "Complete"
+transitions:
+  - from: "todo"
+    to: "doing"
+    actions:
+      - type: validate
+        rule: body_not_empty
+systems:
+  Combat:
+    transitions:
+      - from: "doing"
+        to: "done"
+        actions:
+          - type: inject_prompt
+            prompt: "Combat-specific guidance"
 `
 	os.WriteFile(fp, []byte(content), 0644)
 
@@ -426,8 +574,14 @@ func TestLoadWorkflow(t *testing.T) {
 		t.Errorf("first status = %q, want %q", wf.Statuses[0].Name, "todo")
 	}
 
-	if len(wf.Statuses[0].Validation) != 1 || wf.Statuses[0].Validation[0] != "body_not_empty" {
-		t.Errorf("validation = %v, want [body_not_empty]", wf.Statuses[0].Validation)
+	if len(wf.Transitions) != 1 {
+		t.Fatalf("got %d transitions, want 1", len(wf.Transitions))
+	}
+	if wf.Transitions[0].Actions[0].Rule != "body_not_empty" {
+		t.Errorf("rule = %q, want %q", wf.Transitions[0].Actions[0].Rule, "body_not_empty")
+	}
+	if _, ok := wf.Systems["Combat"]; !ok {
+		t.Fatal("expected Combat system overlay")
 	}
 }
 

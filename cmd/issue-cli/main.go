@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -449,6 +450,7 @@ Commands:
   checklist <slug>     Show checkbox status for an issue
   list                 List issues with filters (--status open|closed|<name>)
   search <query>       Search issues (supports regex, e.g. "foo|bar")
+  update <slug>        Replace issue body (--body "content"), preserves frontmatter
   append <slug>        Append content to issue body (--body "## Section\ncontent")
   stats                Project health overview
   report-bug <desc>    Report a bug in issue-cli itself
@@ -628,6 +630,19 @@ validates that the comment exists but trusts its content.
 		proj := loadProject(configPath, projectSlug)
 		issues, _ := tracker.LoadIssues(proj.IssueDir)
 		_, systems, _, _, _ := tracker.CollectFilterValues(issues)
+		// Include empty subdirectories as systems too
+		subdirSystems := tracker.CollectSubdirSystems(proj.IssueDir)
+		seen := map[string]bool{}
+		for _, s := range systems {
+			seen[s] = true
+		}
+		for _, s := range subdirSystems {
+			if !seen[s] {
+				systems = append(systems, s)
+				seen[s] = true
+			}
+		}
+		sort.Strings(systems)
 		fmt.Println("== Available Systems ==")
 		for _, s := range systems {
 			fmt.Printf("  %s\n", s)
@@ -773,7 +788,7 @@ func runNext(proj *tracker.Project, design bool, version string) {
 
 func runStart(proj *tracker.Project, slug, assignee string) {
 	issue, _ := findIssue(proj, slug)
-	wf := proj.LoadWorkflow()
+	wf := proj.LoadWorkflowForIssue(issue)
 
 	if assignee == "" {
 		assignee = agentNameForSlug(slug)
@@ -798,23 +813,19 @@ func runStart(proj *tracker.Project, slug, assignee string) {
 
 	// Auto-transition to in progress if in backlog
 	if issue.Status == "backlog" {
-		s := "in progress"
-		update := tracker.IssueUpdate{Status: &s}
-
-		// Append template for "in progress"
-		newBody, appended := wf.AppendTemplate(issue.BodyRaw, "in progress")
-		if appended {
-			update.Body = &newBody
-			issue.BodyRaw = newBody
+		if err := wf.ValidateTransition(issue, "backlog", "in progress", nil); err != nil {
+			fatal("Failed to transition: %v", err)
 		}
-
-		err := tracker.UpdateIssueFrontmatter(issue.FilePath, update)
-		if err != nil {
+		result := wf.ApplyTransition(issue, "backlog", "in progress")
+		if err := tracker.UpdateIssueFrontmatter(issue.FilePath, result.Update); err != nil {
 			fatal("Failed to transition: %v", err)
 		}
 		fmt.Println("✓ Status → in progress")
-		if appended {
-			fmt.Println("✓ Template checkboxes appended to issue body")
+		if result.BodyAppended {
+			fmt.Println("✓ Workflow content appended to issue body")
+		}
+		if result.ClearedApproval {
+			fmt.Println("✓ Approval consumed")
 		}
 		issue.Status = "in progress"
 	}
@@ -849,6 +860,14 @@ func printWorkflowNextSteps(wf *tracker.WorkflowConfig, issue *tracker.Issue) {
 	if next != "" {
 		fmt.Println("== Next ==")
 		fmt.Printf("  issue-cli transition %s --to \"%s\"\n", issue.Slug, next)
+		prompts := wf.TransitionPrompts(issue.Status, next)
+		if len(prompts) > 0 {
+			fmt.Println()
+			fmt.Println("== Transition Guidance ==")
+			for _, prompt := range prompts {
+				fmt.Printf("- %s\n", prompt)
+			}
+		}
 	}
 }
 
@@ -1002,7 +1021,7 @@ func runCreate(proj *tracker.Project, args []string) {
 
 func runTransition(proj *tracker.Project, slug, to string) {
 	issue, _ := findIssue(proj, slug)
-	wf := proj.LoadWorkflow()
+	wf := proj.LoadWorkflowForIssue(issue)
 	to = strings.ToLower(to)
 
 	if !wf.IsValidTransition(issue.Status, to) {
@@ -1016,37 +1035,25 @@ func runTransition(proj *tracker.Project, slug, to string) {
 
 	// Validate requirements for this transition
 	comments, _ := tracker.LoadComments(issue.FilePath)
-	if err := wf.Validate(issue, to, comments); err != nil {
+	if err := wf.ValidateTransition(issue, issue.Status, to, comments); err != nil {
 		fatal("Cannot transition to \"%s\" — %s", to, err)
 	}
 
-	// Build update: status + template append + side-effects
-	s := to
-	update := tracker.IssueUpdate{Status: &s}
-
-	// Apply side-effects (e.g. clear_assignee on backlog)
-	sideEffects := wf.ApplySideEffects(to)
-	if sideEffects.Assignee != nil {
-		update.Assignee = sideEffects.Assignee
-	}
-
-	newBody, appended := wf.AppendTemplate(issue.BodyRaw, to)
-	if appended {
-		update.Body = &newBody
-		issue.BodyRaw = newBody
-	}
-
-	if err := tracker.UpdateIssueFrontmatter(issue.FilePath, update); err != nil {
+	result := wf.ApplyTransition(issue, issue.Status, to)
+	if err := tracker.UpdateIssueFrontmatter(issue.FilePath, result.Update); err != nil {
 		fatal("Failed to transition: %v", err)
 	}
 
 	fmt.Printf("✓ %s → %s\n", issue.Status, to)
 	fmt.Printf("file: %s\n", issue.FilePath)
-	if update.Assignee != nil && *update.Assignee == "" {
+	if result.Update.Assignee != nil && *result.Update.Assignee == "" {
 		fmt.Println("✓ Assignee cleared (side-effect)")
 	}
-	if appended {
-		fmt.Println("✓ Template checkboxes appended to issue body")
+	if result.ClearedApproval {
+		fmt.Println("✓ Approval consumed")
+	}
+	if result.BodyAppended {
+		fmt.Println("✓ Workflow content appended to issue body")
 	}
 	fmt.Println()
 
@@ -1090,53 +1097,24 @@ func runUnclaim(proj *tracker.Project, slug string) {
 func runUpdate(proj *tracker.Project, slug string, args []string) {
 	issue, _ := findIssue(proj, slug)
 	update := tracker.IssueUpdate{}
-	changed := false
 
-	if s := flagValue(args, "--status"); s != "" {
-		update.Status = &s
-		changed = true
-	}
-	if p := flagValue(args, "--priority"); p != "" {
-		update.Priority = &p
-		changed = true
-	}
-	if a := flagValue(args, "--assignee"); a != "" {
-		update.Assignee = &a
-		changed = true
-	}
-	if l := flagValue(args, "--labels"); l != "" {
-		update.Labels = strings.Split(l, ",")
-		changed = true
+	b := flagValue(args, "--body")
+	if b == "" {
+		fatal("update requires --body\n\nExample:\n  issue-cli update %s --body \"new body content\"", slug)
 	}
 
-	if !changed {
-		fatal("No fields to update. Use --status, --priority, --assignee, or --labels\n\nExample:\n  issue-cli update %s --status \"in progress\" --priority high", slug)
-	}
-
+	update.Body = &b
 	if err := tracker.UpdateIssueFrontmatter(issue.FilePath, update); err != nil {
 		fatal("Failed to update: %v", err)
 	}
 
-	fmt.Printf("✓ Updated: %s\n", issue.Slug)
-	if update.Status != nil {
-		fmt.Printf("  status → %s\n", *update.Status)
-	}
-	if update.Priority != nil {
-		fmt.Printf("  priority → %s\n", *update.Priority)
-	}
-	if update.Assignee != nil {
-		fmt.Printf("  assignee → %s\n", *update.Assignee)
-	}
-	if update.Labels != nil {
-		fmt.Printf("  labels → %s\n", strings.Join(update.Labels, ", "))
-	}
+	fmt.Printf("✓ Updated body: %s\n", issue.Slug)
 	fmt.Printf("file: %s\n", issue.FilePath)
-	fmt.Printf("\nhint: don't forget to update %s with recent changes, progress notes, or TODOs (use - [ ] checkboxes for TODOs)\n", issue.FilePath)
 }
 
 func runDone(proj *tracker.Project, slug string) {
 	issue, _ := findIssue(proj, slug)
-	wf := proj.LoadWorkflow()
+	wf := proj.LoadWorkflowForIssue(issue)
 	comments, _ := tracker.LoadComments(issue.FilePath)
 
 	fmt.Println("== Validation ==")
@@ -1160,7 +1138,11 @@ func runDone(proj *tracker.Project, slug string) {
 	// Check all validations from current+1 through done
 	for i := currentIdx + 1; i <= doneIdx; i++ {
 		st := statusOrder[i]
-		if err := wf.Validate(issue, st, comments); err != nil {
+		prev := issue.Status
+		if i > 0 {
+			prev = statusOrder[i-1]
+		}
+		if err := wf.ValidateTransition(issue, prev, st, comments); err != nil {
 			fmt.Printf("✗ %s: %s\n", st, err)
 			ok = false
 		} else {

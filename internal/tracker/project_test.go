@@ -90,6 +90,14 @@ func TestProjectLoadWorkflow_WithFile(t *testing.T) {
     description: "To do"
   - name: "done"
     description: "Complete"
+systems:
+  Combat:
+    transitions:
+      - from: "idea"
+        to: "in design"
+        actions:
+          - type: inject_prompt
+            prompt: "Combat guidance"
 `
 	os.WriteFile(wfPath, []byte(content), 0644)
 
@@ -99,9 +107,29 @@ func TestProjectLoadWorkflow_WithFile(t *testing.T) {
 	}
 
 	wf := p.LoadWorkflow()
+
+	// "done" exists in defaults — description should be overridden
+	doneStatus := wf.GetStatus("done")
+	if doneStatus == nil || doneStatus.Description != "Complete" {
+		t.Errorf("done description = %q, want %q", doneStatus.Description, "Complete")
+	}
+	// "todo" is new — should be appended after defaults
+	todoStatus := wf.GetStatus("todo")
+	if todoStatus == nil || todoStatus.Description != "To do" {
+		t.Errorf("todo not found or description wrong")
+	}
 	order := wf.GetStatusOrder()
-	if len(order) != 2 || order[0] != "todo" || order[1] != "done" {
-		t.Errorf("workflow order = %v, want [todo done]", order)
+	if order[len(order)-1] != "todo" {
+		t.Errorf("expected todo appended at end, got order = %v", order)
+	}
+
+	combat := p.LoadWorkflowForSystem("Combat")
+	if combat == nil {
+		t.Fatal("expected workflow for Combat system")
+	}
+	prompts := combat.TransitionPrompts("idea", "in design")
+	if len(prompts) == 0 || prompts[0] != "Combat guidance" {
+		t.Fatalf("unexpected prompts: %#v", prompts)
 	}
 }
 
