@@ -7,7 +7,6 @@
 # Status fields:
 #   - name: status identifier (used in issue frontmatter)
 #   - description: shown in board column headers
-#   - template: optional markdown seeded when an issue is created in that status
 #
 # Transition action types:
 #   - validate:
@@ -37,19 +36,9 @@
 statuses:
   - name: "idea"
     description: "Raw idea, needs exploration"
-    template: |
-      ## Idea
-      - [ ] Description written with enough context for someone unfamiliar
-      - [ ] Edge cases and constraints identified
-      - [ ] Scope is clear (what is NOT included)
 
   - name: "in design"
     description: "Being designed and specced out"
-    template: |
-      ## Design
-      - [ ] Acceptance criteria defined as checkboxes
-      - [ ] Dependencies identified
-      - [ ] Approach documented
 
   - name: "backlog"
     description: "Ready to work on"
@@ -75,6 +64,18 @@ transitions:
     actions:
       - type: validate
         rule: body_not_empty
+      - type: append_section
+        title: Idea
+        body: |
+          - [ ] Description written with enough context for someone unfamiliar
+          - [ ] Edge cases and constraints identified
+          - [ ] Scope is clear (what is NOT included)
+      - type: append_section
+        title: Design
+        body: |
+          - [ ] Acceptance criteria defined as checkboxes
+          - [ ] Dependencies identified
+          - [ ] Approach documented
 
   - from: "in design"
     to: "backlog"

@@ -77,12 +77,10 @@ func DefaultWorkflow() *WorkflowConfig {
 			{
 				Name:        "idea",
 				Description: "Raw idea, needs exploration",
-				Template: "## Idea\n- [ ] Problem described clearly\n- [ ] Scope defined\n- [ ] Constraints and open questions captured",
 			},
 			{
 				Name:        "in design",
 				Description: "Being designed and specced out",
-				Template: "## Design\n- [ ] Acceptance criteria defined as checkboxes\n- [ ] Approach documented\n- [ ] Open questions called out explicitly",
 			},
 			{
 				Name:        "backlog",
@@ -115,6 +113,8 @@ func DefaultWorkflow() *WorkflowConfig {
 				To:   "in design",
 				Actions: []WorkflowAction{
 					{Type: "validate", Rule: "body_not_empty"},
+					{Type: "append_section", Title: "Idea", Body: "- [ ] Problem described clearly\n- [ ] Scope defined\n- [ ] Constraints and open questions captured"},
+					{Type: "append_section", Title: "Design", Body: "- [ ] Acceptance criteria defined as checkboxes\n- [ ] Approach documented\n- [ ] Open questions called out explicitly"},
 				},
 			},
 			{

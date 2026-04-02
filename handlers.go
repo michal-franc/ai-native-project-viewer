@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/michal-franc/issue-viewer/internal/tracker"
+	"gopkg.in/yaml.v3"
 )
 
 //go:embed templates/*.html
@@ -185,8 +186,16 @@ func (s *Server) handleProjectRoutes(w http.ResponseWriter, r *http.Request) {
 		s.handleList(w, r, proj, prefix)
 	case rest == "board":
 		s.handleBoard(w, r, proj, prefix)
+	case rest == "workflow-designer" && r.Method == http.MethodGet:
+		s.handleWorkflowDesigner(w, r, proj, prefix)
+	case rest == "workflow-designer/data" && r.Method == http.MethodGet:
+		s.handleWorkflowDesignerData(w, r, proj)
+	case rest == "workflow-designer" && r.Method == http.MethodPost:
+		s.handleSaveWorkflowDesigner(w, r, proj)
 	case rest == "hash":
 		s.handleHash(w, r, proj)
+	case rest == "issues.json":
+		s.handleIssuesJSON(w, r, proj)
 	case rest == "docs":
 		s.handleDocs(w, r, proj, prefix)
 	case strings.HasPrefix(rest, "docs/"):
@@ -201,6 +210,8 @@ func (s *Server) handleProjectRoutes(w http.ResponseWriter, r *http.Request) {
 		s.handleDeleteComment(w, r, proj, prefix)
 	case strings.HasPrefix(rest, "issue/") && strings.HasSuffix(rest, "/dispatch") && r.Method == http.MethodPost:
 		s.handleDispatchAgent(w, r, proj, prefix)
+	case strings.HasPrefix(rest, "issue/") && strings.HasSuffix(rest, "/approve") && r.Method == http.MethodPost:
+		s.handleApproveIssue(w, r, proj, prefix)
 	case strings.HasPrefix(rest, "issue/") && strings.HasSuffix(rest, "/delete") && r.Method == http.MethodPost:
 		s.handleDeleteIssue(w, r, proj, prefix)
 	case rest == "issues/create" && r.Method == http.MethodPost:
@@ -296,6 +307,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request, proj *tracke
 
 	total := len(issues)
 	statuses, systems, priorities, labels, assignees := tracker.CollectFilterValues(issues)
+	systems = mergeSubdirSystems(systems, proj.IssueDir)
 
 	filter := FilterParams{
 		Status:   r.URL.Query().Get("status"),
@@ -331,12 +343,13 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request, proj *tracke
 // --- Issue Detail ---
 
 type DetailData struct {
-	Issue       *tracker.Issue
-	BackURL     string
-	Prefix      string
-	ProjectName string
-	Statuses    []string
-	SlugMap     map[string]string
+	Issue          *tracker.Issue
+	BackURL        string
+	Prefix         string
+	ProjectName    string
+	Statuses       []string
+	SlugMap        map[string]string
+	NeedsApproval  string // next status name if it requires approved_for, else empty
 }
 
 func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
@@ -389,7 +402,22 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *trac
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	wf := proj.LoadWorkflow()
 	statuses := orderedStatusesForIssue(wf, found.Status)
-	if err := s.tmpl.ExecuteTemplate(w, "detail.html", DetailData{Issue: found, BackURL: backURL, Prefix: prefix, ProjectName: proj.Name, Statuses: statuses, SlugMap: slugMap}); err != nil {
+
+	// Check if the next status requires approved_for validation
+	var needsApproval string
+	nextStatus := wf.NextStatus(found.Status)
+	if nextStatus != "" {
+		if ns := wf.GetStatus(nextStatus); ns != nil {
+			for _, v := range ns.Validation {
+				if strings.HasPrefix(v, "approved_for:") {
+					needsApproval = nextStatus
+					break
+				}
+			}
+		}
+	}
+
+	if err := s.tmpl.ExecuteTemplate(w, "detail.html", DetailData{Issue: found, BackURL: backURL, Prefix: prefix, ProjectName: proj.Name, Statuses: statuses, SlugMap: slugMap, NeedsApproval: needsApproval}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -415,6 +443,15 @@ type BoardData struct {
 	Labels      []string
 	Prefix      string
 	ProjectName string
+}
+
+type WorkflowDesignerData struct {
+	Prefix         string
+	ProjectName    string
+	WorkflowJSON   string
+	WorkflowYAML   string
+	WorkflowSource string
+	WorkflowTarget string
 }
 
 
@@ -456,7 +493,7 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *track
 	for s := range systemSet {
 		systems = append(systems, s)
 	}
-	sort.Strings(systems)
+	systems = mergeSubdirSystems(systems, proj.IssueDir)
 	var assignees []string
 	for a := range assigneeSet {
 		assignees = append(assignees, a)
@@ -545,6 +582,109 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *track
 	if err := s.tmpl.ExecuteTemplate(w, "board.html", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func (s *Server) handleWorkflowDesigner(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	wf := proj.LoadWorkflow()
+	workflowJSON, err := json.MarshalIndent(wf, "", "  ")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	workflowYAML, err := yaml.Marshal(wf)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	source := "built-in default workflow"
+	target := workflowFileTarget(proj)
+	switch {
+	case proj.WorkflowFile != "":
+		source = proj.WorkflowFile
+	case fileExists("workflow.yaml"):
+		source = "workflow.yaml"
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.tmpl.ExecuteTemplate(w, "workflow-designer.html", WorkflowDesignerData{
+		Prefix:         prefix,
+		ProjectName:    proj.Name,
+		WorkflowJSON:   string(workflowJSON),
+		WorkflowYAML:   string(workflowYAML),
+		WorkflowSource: source,
+		WorkflowTarget: target,
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) handleWorkflowDesignerData(w http.ResponseWriter, r *http.Request, proj *tracker.Project) {
+	wf := proj.LoadWorkflow()
+	source := "built-in default workflow"
+	target := workflowFileTarget(proj)
+	switch {
+	case proj.WorkflowFile != "":
+		source = proj.WorkflowFile
+	case fileExists("workflow.yaml"):
+		source = "workflow.yaml"
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"workflow": wf,
+		"source":   source,
+		"target":   target,
+	})
+}
+
+func (s *Server) handleSaveWorkflowDesigner(w http.ResponseWriter, r *http.Request, proj *tracker.Project) {
+	var body struct {
+		YAML string `json:"yaml"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(body.YAML) == "" {
+		http.Error(w, `{"error":"yaml is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	var cfg tracker.WorkflowConfig
+	if err := yaml.Unmarshal([]byte(body.YAML), &cfg); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"invalid workflow yaml: %s"}`, strings.ReplaceAll(err.Error(), `"`, `'`)), http.StatusBadRequest)
+		return
+	}
+
+	target := workflowFileTarget(proj)
+	if err := os.WriteFile(target, []byte(body.YAML+"\n"), 0644); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"save failed: %s"}`, strings.ReplaceAll(err.Error(), `"`, `'`)), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status": "ok",
+		"path":   target,
+	})
+}
+
+func workflowFileTarget(proj *tracker.Project) string {
+	if proj.WorkflowFile != "" {
+		return proj.WorkflowFile
+	}
+	return "workflow.yaml"
+}
+
+func fileExists(path string) bool {
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // --- Docs ---
@@ -795,6 +935,39 @@ func (s *Server) handleHash(w http.ResponseWriter, r *http.Request, proj *tracke
 	json.NewEncoder(w).Encode(map[string]string{"hash": fmt.Sprintf("%x", h.Sum(nil))})
 }
 
+type issueJSON struct {
+	Slug     string   `json:"slug"`
+	Title    string   `json:"title"`
+	Status   string   `json:"status"`
+	System   string   `json:"system"`
+	Priority string   `json:"priority"`
+	Assignee string   `json:"assignee"`
+	Version  string   `json:"version"`
+	Labels   []string `json:"labels"`
+}
+
+func (s *Server) handleIssuesJSON(w http.ResponseWriter, r *http.Request, proj *tracker.Project) {
+	issues, _ := tracker.LoadIssues(proj.IssueDir)
+	result := make([]issueJSON, len(issues))
+	for i, issue := range issues {
+		result[i] = issueJSON{
+			Slug:     issue.Slug,
+			Title:    issue.Title,
+			Status:   issue.Status,
+			System:   issue.System,
+			Priority: issue.Priority,
+			Assignee: issue.Assignee,
+			Version:  issue.Version,
+			Labels:   issue.Labels,
+		}
+		if result[i].Labels == nil {
+			result[i].Labels = []string{}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
 // --- Delete Issue ---
 
 func (s *Server) handleDeleteIssue(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
@@ -814,6 +987,40 @@ func (s *Server) handleDeleteIssue(w http.ResponseWriter, r *http.Request, proj 
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleApproveIssue(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	slug := strings.TrimPrefix(r.URL.Path, prefix+"/issue/")
+	slug = strings.TrimSuffix(slug, "/approve")
+
+	issue := s.findIssueBySlug(proj, slug)
+	if issue == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Status == "" {
+		http.Error(w, `{"error":"status required"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Toggle: if already approved for this status, clear it
+	var approvedFor string
+	if !strings.EqualFold(issue.ApprovedFor, body.Status) {
+		approvedFor = body.Status
+	}
+
+	update := tracker.IssueUpdate{ApprovedFor: &approvedFor}
+	if err := tracker.UpdateIssueFrontmatter(issue.FilePath, update); err != nil {
+		http.Error(w, "update failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "approved_for": approvedFor})
 }
 
 // --- Create Issue ---
@@ -1126,26 +1333,49 @@ func (s *Server) handleDispatchAgent(w http.ResponseWriter, r *http.Request, pro
 	// Step 5: Wait for shell to be ready in tmux
 	time.Sleep(500 * time.Millisecond)
 
-	// Step 6: Start agent in interactive mode
-	runStep(&steps, fmt.Sprintf("Start %s (interactive)", agentType),
-		exec.Command("tmux", "send-keys", "-t", session, agentType, "Enter"))
+	// Step 6: Launch agent with prompt
+	if agentType == "codex" {
+		// Codex accepts prompt as CLI argument — pass via file to avoid send-keys/paste issues
+		cmd := fmt.Sprintf("codex \"$(cat %s)\"", promptFile.Name())
+		runStep(&steps, "Start codex with prompt",
+			exec.Command("tmux", "send-keys", "-t", session, cmd, "Enter"))
+	} else {
+		// Claude: start interactive, then paste prompt
+		runStep(&steps, fmt.Sprintf("Start %s (interactive)", agentType),
+			exec.Command("tmux", "send-keys", "-t", session, agentType, "Enter"))
 
-	// Step 7: Wait for agent to boot
-	time.Sleep(3 * time.Second)
+		time.Sleep(3 * time.Second)
 
-	// Step 8: Load prompt into tmux buffer and paste into agent
-	runStep(&steps, "Load prompt into tmux buffer",
-		exec.Command("tmux", "load-buffer", promptFile.Name()))
+		runStep(&steps, "Load prompt into tmux buffer",
+			exec.Command("tmux", "load-buffer", promptFile.Name()))
 
-	runStep(&steps, fmt.Sprintf("Paste prompt to %s", agentType),
-		exec.Command("tmux", "paste-buffer", "-t", session))
+		runStep(&steps, fmt.Sprintf("Paste prompt to %s", agentType),
+			exec.Command("tmux", "paste-buffer", "-t", session))
 
-	// Step 9: Submit with Enter
-	time.Sleep(200 * time.Millisecond)
-	runStep(&steps, "Submit prompt",
-		exec.Command("tmux", "send-keys", "-t", session, "Enter"))
+		time.Sleep(200 * time.Millisecond)
+		runStep(&steps, "Submit prompt",
+			exec.Command("tmux", "send-keys", "-t", session, "Enter"))
+	}
 
 	respond("dispatched")
+}
+
+// mergeSubdirSystems merges subdirectory names into the systems list so that
+// empty folders still appear as available systems.
+func mergeSubdirSystems(systems []string, issueDir string) []string {
+	subdirSystems := tracker.CollectSubdirSystems(issueDir)
+	seen := map[string]bool{}
+	for _, s := range systems {
+		seen[s] = true
+	}
+	for _, s := range subdirSystems {
+		if !seen[s] {
+			systems = append(systems, s)
+			seen[s] = true
+		}
+	}
+	sort.Strings(systems)
+	return systems
 }
 
 // --- Filters ---
