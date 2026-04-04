@@ -37,6 +37,7 @@ Open `http://localhost:8080` to see a sample project with issues and docs.
 - **Theme picker** — dark, dracula, light
 - **Agent dispatch** — send issues to Claude or Codex from the board (hover play button) or detail view
 - **Live agent activity** — tmux session names that match issue slugs show active-agent badges on list and board views, session details on the issue page, and a project-level active bot count in the header
+- **Approval follow-up** — granting human approval from the issue detail page can notify the active tmux-backed agent session so the bot can continue without manual terminal input
 
 ### CLI (`issue-cli`)
 
@@ -88,6 +89,7 @@ make install
 | `check <slug> <text>` | Check off a checkbox item by text match                      |
 | `comment <slug>`      | Add a comment                                                |
 | `checklist <slug>`    | Show checkbox progress                                       |
+| `append <slug>`       | Append body content, or target an existing section           |
 | `list`                | List issues with filters                                     |
 | `search <query>`      | Search across titles, bodies, and statuses                   |
 | `stats`               | Project health overview                                      |
@@ -115,11 +117,24 @@ make install
 The CLI enforces strict status progression for bots:
 
 - **`create`** — only allows `idea` or `in design` status
-- **`start`** — only transitions from `backlog` to `in progress`, and only after human approval for `in progress`
+- **`start`** — only transitions from `backlog` to `in progress`, and only after human approval for `in progress`; if approval is missing, it fails without mutating the issue and tells the user no changes were made
 - **`transition`** — sequential only, one step at a time
 - **`done`** — only from `documentation` status
 
 The web UI (drag-and-drop) has no restrictions — humans have full power.
+
+### Append Behavior
+
+`issue-cli append` supports both raw body append and section-aware append:
+
+- `issue-cli append <slug> --section "Design" --body "- [ ] cover edge case"`
+  Appends into the existing normalized `Design` section, or creates it if missing.
+- `issue-cli append <slug> --section "Design" --body "..." --force`
+  Required when multiple normalized matches exist; merges into the deterministic target section.
+- `issue-cli append <slug> --body "## Test Plan\n\n### Automated\n- test 1"`
+  Raw append still works, but it now rejects input that would introduce a normalized duplicate heading already present in the issue body.
+
+Escaped newlines in `--body` and `--text` are interpreted, so `\n` becomes a real newline before the append logic runs.
 
 ### Project Version
 

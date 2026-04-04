@@ -126,6 +126,82 @@ func TestParseIssue_EmptyLabels(t *testing.T) {
 	}
 }
 
+func TestAppendIssueBodyRejectsNormalizedDuplicateHeadings(t *testing.T) {
+	body := "## Design\nExisting design notes"
+	_, changed, err := AppendIssueBody(body, "###   design\nNew design notes")
+	if err == nil {
+		t.Fatal("expected duplicate heading error")
+	}
+	if changed {
+		t.Fatal("changed = true, want false")
+	}
+	if !strings.Contains(err.Error(), "duplicate heading") {
+		t.Fatalf("error = %q, want duplicate heading guidance", err)
+	}
+	if !strings.Contains(err.Error(), "Use --section") {
+		t.Fatalf("error = %q, want section guidance", err)
+	}
+}
+
+func TestAppendIssueBodyToSectionCreatesMissingSection(t *testing.T) {
+	body, changed, err := AppendIssueBodyToSection("## Idea\nProblem", "Design", "Plan", false)
+	if err != nil {
+		t.Fatalf("AppendIssueBodyToSection returned error: %v", err)
+	}
+	if !changed {
+		t.Fatal("changed = false, want true")
+	}
+	want := "## Idea\nProblem\n\n## Design\nPlan\n"
+	if body != want {
+		t.Fatalf("body = %q, want %q", body, want)
+	}
+}
+
+func TestAppendIssueBodyToSectionAppendsToNormalizedMatch(t *testing.T) {
+	body, changed, err := AppendIssueBodyToSection("###   Design  \nExisting detail", "design", "New detail", false)
+	if err != nil {
+		t.Fatalf("AppendIssueBodyToSection returned error: %v", err)
+	}
+	if !changed {
+		t.Fatal("changed = false, want true")
+	}
+	want := "###   Design  \nExisting detail\n\nNew detail\n"
+	if body != want {
+		t.Fatalf("body = %q, want %q", body, want)
+	}
+}
+
+func TestAppendIssueBodyToSectionRejectsAmbiguousMatchWithoutForce(t *testing.T) {
+	body := "## Design\nOne\n\n### Design\nTwo"
+	_, changed, err := AppendIssueBodyToSection(body, "design", "Three", false)
+	if err == nil {
+		t.Fatal("expected ambiguity error")
+	}
+	if changed {
+		t.Fatal("changed = true, want false")
+	}
+	if !strings.Contains(err.Error(), "multiple matching sections") {
+		t.Fatalf("error = %q, want ambiguity guidance", err)
+	}
+	if !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("error = %q, want force guidance", err)
+	}
+}
+
+func TestAppendIssueBodyToSectionForceUsesFirstMatch(t *testing.T) {
+	body, changed, err := AppendIssueBodyToSection("## Design\nOne\n\n### Design\nTwo", "design", "Three", true)
+	if err != nil {
+		t.Fatalf("AppendIssueBodyToSection returned error: %v", err)
+	}
+	if !changed {
+		t.Fatal("changed = false, want true")
+	}
+	want := "## Design\nOne\n\n### Design\nTwo\n\nThree\n"
+	if body != want {
+		t.Fatalf("body = %q, want %q", body, want)
+	}
+}
+
 func TestLoadIssues(t *testing.T) {
 	dir := t.TempDir()
 

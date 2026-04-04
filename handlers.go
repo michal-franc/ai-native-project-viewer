@@ -86,6 +86,13 @@ var funcMap = template.FuncMap{
 	"joinLabels": func(labels []string) string {
 		return strings.Join(labels, ", ")
 	},
+	"addCounts": func(counts map[string]int, keys ...string) int {
+		total := 0
+		for _, key := range keys {
+			total += counts[key]
+		}
+		return total
+	},
 	"safeHTML": func(s string) template.HTML {
 		return template.HTML(s)
 	},
@@ -139,6 +146,15 @@ type AgentSession struct {
 	StartTime string `json:"start_time"`
 }
 
+type approvalResponse struct {
+	Status              string `json:"status"`
+	HumanApproval       string `json:"human_approval"`
+	NotifiedSession     string `json:"notified_session,omitempty"`
+	NotificationMessage string `json:"notification_message,omitempty"`
+	NotificationError   string `json:"notification_error,omitempty"`
+	Label               string `json:"label,omitempty"`
+}
+
 type IssueView struct {
 	*tracker.Issue
 	ActiveSessions []AgentSession
@@ -149,6 +165,35 @@ func (i *IssueView) HasActiveAgent() bool {
 }
 
 var listTmuxSessions = defaultListTmuxSessions
+var tmuxSendKeys = defaultTmuxSendKeys
+
+func defaultTmuxSendKeys(target string, lines []string) error {
+	if len(lines) == 0 {
+		return nil
+	}
+	content := strings.Join(lines, "\n")
+	tmp, err := os.CreateTemp("", "issue-approval-*.txt")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := exec.Command("tmux", "load-buffer", tmpPath).Run(); err != nil {
+		return err
+	}
+	if err := exec.Command("tmux", "paste-buffer", "-t", target).Run(); err != nil {
+		return err
+	}
+	time.Sleep(200 * time.Millisecond)
+	return exec.Command("tmux", "send-keys", "-t", target, "Enter").Run()
+}
 
 func NewServer(projects []tracker.Project) (*Server, error) {
 	tmpl, err := template.New("").Funcs(funcMap).ParseFS(templateFS, "templates/*.html")
@@ -203,6 +248,14 @@ func (s *Server) handleProjectRoutes(w http.ResponseWriter, r *http.Request) {
 		s.handleList(w, r, proj, prefix)
 	case rest == "board":
 		s.handleBoard(w, r, proj, prefix)
+	case rest == "retros":
+		s.handleRetros(w, r, proj, prefix)
+	case rest == "retros/review" && r.Method == http.MethodPost:
+		s.handleRetrosReviewDispatch(w, r, proj)
+	case strings.HasPrefix(rest, "retros/retro/") && strings.HasSuffix(rest, "/status") && r.Method == http.MethodPost:
+		s.handleUpdateRetroStatus(w, r, proj, prefix)
+	case strings.HasPrefix(rest, "retros/bug/") && strings.HasSuffix(rest, "/status") && r.Method == http.MethodPost:
+		s.handleUpdateBugStatus(w, r, proj, prefix)
 	case rest == "workflow-flow":
 		s.handleWorkflowFlow(w, r, proj, prefix)
 	case rest == "workflow-designer" && r.Method == http.MethodGet:
@@ -513,6 +566,46 @@ type WorkflowFlowData struct {
 	ProjectName string
 }
 
+type RetroEntry struct {
+	FileName     string
+	FilePath     string
+	IssueSlug    string
+	IssueTitle   string
+	Status       string
+	System       string
+	Date         string
+	BodyHTML     string
+	BodyRaw      string
+	ModTime      time.Time
+	ReviewStatus string
+}
+
+type ToolBugReportView struct {
+	FileName    string
+	FilePath    string
+	IssueSlug   string
+	Description string
+	Tool        string
+	Timestamp   string
+	Status      string
+}
+
+type RetrosData struct {
+	Retros      []*RetroEntry
+	Bugs        []*ToolBugReportView
+	RetroStatus string
+	BugStatus   string
+	RetroCounts map[string]int
+	BugCounts   map[string]int
+	Prefix      string
+	ProjectName string
+	ActiveBots  int
+}
+
+type statusUpdateResponse struct {
+	Status string `json:"status"`
+}
+
 func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
 	issues, err := tracker.LoadIssues(proj.IssueDir)
 	if err != nil {
@@ -715,6 +808,482 @@ func (s *Server) handleWorkflowFlow(w http.ResponseWriter, r *http.Request, proj
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func (s *Server) handleRetros(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	issues, err := tracker.LoadIssues(proj.IssueDir)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	retros, err := loadRetrospectives(proj)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	bugs, err := loadRelatedToolBugs(issues)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	retroCounts := countRetrosByStatus(retros)
+	bugCounts := countBugsByStatus(bugs)
+
+	retroStatus := normalizeRetroReviewStatus(r.URL.Query().Get("retro_status"))
+	if retroStatus != "" {
+		retros = filterRetrosByStatus(retros, retroStatus)
+	}
+
+	bugStatus := normalizeBugStatus(r.URL.Query().Get("bug_status"))
+	if bugStatus != "" {
+		bugs = filterBugsByStatus(bugs, bugStatus)
+	}
+
+	_, activeBots := sessionsByIssueSlug(issues)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.tmpl.ExecuteTemplate(w, "retros.html", RetrosData{
+		Retros:      retros,
+		Bugs:        bugs,
+		RetroStatus: retroStatus,
+		BugStatus:   bugStatus,
+		RetroCounts: retroCounts,
+		BugCounts:   bugCounts,
+		Prefix:      prefix,
+		ProjectName: proj.Name,
+		ActiveBots:  activeBots,
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func projectRoot(proj *tracker.Project) string {
+	if proj != nil && proj.WorkDir != "" {
+		return proj.WorkDir
+	}
+	if proj != nil && proj.IssueDir != "" {
+		if abs, err := filepath.Abs(proj.IssueDir); err == nil {
+			return filepath.Dir(abs)
+		}
+		return filepath.Dir(proj.IssueDir)
+	}
+	cwd, _ := os.Getwd()
+	return cwd
+}
+
+func loadRetrospectives(proj *tracker.Project) ([]*RetroEntry, error) {
+	retroDir := filepath.Join(projectRoot(proj), "retros")
+	info, err := os.Stat(retroDir)
+	if err != nil || !info.IsDir() {
+		return nil, nil
+	}
+
+	var retros []*RetroEntry
+	err = filepath.WalkDir(retroDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(strings.ToLower(d.Name()), ".md") {
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		meta, body := parseRetrospective(string(data))
+		if strings.TrimSpace(body) == "" {
+			body = strings.TrimSpace(string(data))
+		}
+
+		page, err := tracker.ParseDocPage(filepath.Base(path), []byte(body))
+		if err != nil {
+			return err
+		}
+
+		fileInfo, err := d.Info()
+		if err != nil {
+			return err
+		}
+
+		retros = append(retros, &RetroEntry{
+			FileName:     d.Name(),
+			FilePath:     path,
+			IssueSlug:    meta["Issue"],
+			IssueTitle:   meta["Title"],
+			Status:       meta["Status"],
+			System:       meta["System"],
+			Date:         meta["Date"],
+			BodyHTML:     page.BodyHTML,
+			BodyRaw:      body,
+			ModTime:      fileInfo.ModTime(),
+			ReviewStatus: normalizeRetroReviewStatus(meta["ReviewStatus"]),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walking retros directory %s: %w", retroDir, err)
+	}
+
+	sort.Slice(retros, func(i, j int) bool {
+		return retros[i].ModTime.After(retros[j].ModTime)
+	})
+
+	return retros, nil
+}
+
+func parseRetrospective(raw string) (map[string]string, string) {
+	content := strings.ReplaceAll(raw, "\r\n", "\n")
+	lines := strings.Split(content, "\n")
+	meta := map[string]string{}
+
+	start := 0
+	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	if start < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[start]), "#") {
+		start++
+	}
+	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+
+	idx := start
+	for idx < len(lines) {
+		line := strings.TrimSpace(lines[idx])
+		if line == "" {
+			idx++
+			break
+		}
+		switch {
+		case strings.HasPrefix(line, "Issue:"):
+			meta["Issue"] = strings.TrimSpace(strings.TrimPrefix(line, "Issue:"))
+		case strings.HasPrefix(line, "Title:"):
+			meta["Title"] = strings.TrimSpace(strings.TrimPrefix(line, "Title:"))
+		case strings.HasPrefix(line, "Status:"):
+			meta["Status"] = strings.TrimSpace(strings.TrimPrefix(line, "Status:"))
+		case strings.HasPrefix(line, "System:"):
+			meta["System"] = strings.TrimSpace(strings.TrimPrefix(line, "System:"))
+		case strings.HasPrefix(line, "Date:"):
+			meta["Date"] = strings.TrimSpace(strings.TrimPrefix(line, "Date:"))
+		case strings.HasPrefix(line, "ReviewStatus:"):
+			meta["ReviewStatus"] = strings.TrimSpace(strings.TrimPrefix(line, "ReviewStatus:"))
+		default:
+			return meta, strings.TrimSpace(content)
+		}
+		idx++
+	}
+
+	if len(meta) == 0 {
+		return meta, strings.TrimSpace(content)
+	}
+	return meta, strings.TrimSpace(strings.Join(lines[idx:], "\n"))
+}
+
+func loadRelatedToolBugs(issues []*tracker.Issue) ([]*ToolBugReportView, error) {
+	issueSlugs := map[string]bool{}
+	for _, issue := range issues {
+		issueSlugs[issue.Slug] = true
+	}
+
+	type bugReport struct {
+		IssueSlug   string `json:"issue_slug"`
+		Description string `json:"description"`
+		Tool        string `json:"tool"`
+		Timestamp   string `json:"ts"`
+		Status      string `json:"status"`
+	}
+
+	bugDir := filepath.Join(".", "bugs")
+	info, err := os.Stat(bugDir)
+	if err != nil || !info.IsDir() {
+		return nil, nil
+	}
+
+	var bugs []*ToolBugReportView
+	err = filepath.WalkDir(bugDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
+			return nil
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+
+		var report bugReport
+		if err := json.Unmarshal(data, &report); err != nil {
+			return nil
+		}
+		if report.IssueSlug == "" || !issueSlugs[report.IssueSlug] {
+			return nil
+		}
+
+		bugs = append(bugs, &ToolBugReportView{
+			FileName:    d.Name(),
+			FilePath:    path,
+			IssueSlug:   report.IssueSlug,
+			Description: report.Description,
+			Tool:        report.Tool,
+			Timestamp:   report.Timestamp,
+			Status:      normalizeBugStatus(report.Status),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walking bugs directory %s: %w", bugDir, err)
+	}
+
+	sort.Slice(bugs, func(i, j int) bool {
+		return bugs[i].Timestamp > bugs[j].Timestamp
+	})
+
+	return bugs, nil
+}
+
+func normalizeRetroReviewStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "", "open":
+		return "open"
+	case "processed", "done":
+		return "processed"
+	default:
+		return "open"
+	}
+}
+
+func normalizeBugStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "", "open":
+		return "open"
+	case "fixed", "done":
+		return "fixed"
+	case "wontfix", "won't fix", "wont-fix":
+		return "wontfix"
+	default:
+		return "open"
+	}
+}
+
+func filterRetrosByStatus(retros []*RetroEntry, status string) []*RetroEntry {
+	var filtered []*RetroEntry
+	for _, retro := range retros {
+		if normalizeRetroReviewStatus(retro.ReviewStatus) == status {
+			filtered = append(filtered, retro)
+		}
+	}
+	return filtered
+}
+
+func filterBugsByStatus(bugs []*ToolBugReportView, status string) []*ToolBugReportView {
+	var filtered []*ToolBugReportView
+	for _, bug := range bugs {
+		if normalizeBugStatus(bug.Status) == status {
+			filtered = append(filtered, bug)
+		}
+	}
+	return filtered
+}
+
+func countRetrosByStatus(retros []*RetroEntry) map[string]int {
+	counts := map[string]int{
+		"open":      0,
+		"processed": 0,
+	}
+	for _, retro := range retros {
+		counts[normalizeRetroReviewStatus(retro.ReviewStatus)]++
+	}
+	return counts
+}
+
+func countBugsByStatus(bugs []*ToolBugReportView) map[string]int {
+	counts := map[string]int{
+		"open":    0,
+		"fixed":   0,
+		"wontfix": 0,
+	}
+	for _, bug := range bugs {
+		counts[normalizeBugStatus(bug.Status)]++
+	}
+	return counts
+}
+
+func findRetroByFileName(proj *tracker.Project, fileName string) (*RetroEntry, error) {
+	retros, err := loadRetrospectives(proj)
+	if err != nil {
+		return nil, err
+	}
+	for _, retro := range retros {
+		if retro.FileName == fileName {
+			return retro, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *Server) handleUpdateRetroStatus(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	fileName := strings.TrimPrefix(r.URL.Path, prefix+"/retros/retro/")
+	fileName = strings.TrimSuffix(fileName, "/status")
+	fileName = strings.TrimSpace(fileName)
+	if fileName == "" || strings.Contains(fileName, "/") || strings.Contains(fileName, `\`) {
+		http.NotFound(w, r)
+		return
+	}
+
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
+	status := normalizeRetroReviewStatus(body.Status)
+
+	retro, err := findRetroByFileName(proj, fileName)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, strings.ReplaceAll(err.Error(), `"`, `'`)), http.StatusInternalServerError)
+		return
+	}
+	if retro == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	if err := writeRetrospectiveStatus(retro, status); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, strings.ReplaceAll(err.Error(), `"`, `'`)), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(statusUpdateResponse{Status: status})
+}
+
+func writeRetrospectiveStatus(retro *RetroEntry, status string) error {
+	if retro == nil {
+		return fmt.Errorf("retro is required")
+	}
+	content, err := os.ReadFile(retro.FilePath)
+	if err != nil {
+		return err
+	}
+	updated := replaceOrInsertRetrospectiveStatus(string(content), status)
+	return os.WriteFile(retro.FilePath, []byte(updated), 0644)
+}
+
+func replaceOrInsertRetrospectiveStatus(content string, status string) string {
+	normalized := strings.ReplaceAll(content, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "ReviewStatus:") {
+			lines[i] = "ReviewStatus: " + status
+			return strings.Join(lines, "\n")
+		}
+	}
+
+	insertAt := -1
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "Date:") {
+			insertAt = i + 1
+		}
+	}
+	if insertAt == -1 {
+		insertAt = 0
+		for insertAt < len(lines) && strings.TrimSpace(lines[insertAt]) == "" {
+			insertAt++
+		}
+		if insertAt < len(lines) && strings.HasPrefix(strings.TrimSpace(lines[insertAt]), "#") {
+			insertAt++
+		}
+		for insertAt < len(lines) && strings.TrimSpace(lines[insertAt]) != "" {
+			insertAt++
+		}
+	}
+
+	newLines := append([]string{}, lines[:insertAt]...)
+	newLines = append(newLines, "ReviewStatus: "+status)
+	newLines = append(newLines, lines[insertAt:]...)
+	return strings.Join(newLines, "\n")
+}
+
+func (s *Server) handleUpdateBugStatus(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	fileName := strings.TrimPrefix(r.URL.Path, prefix+"/retros/bug/")
+	fileName = strings.TrimSuffix(fileName, "/status")
+	fileName = strings.TrimSpace(fileName)
+	if fileName == "" || strings.Contains(fileName, "/") || strings.Contains(fileName, `\`) {
+		http.NotFound(w, r)
+		return
+	}
+
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, `{"error":"invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
+	status := normalizeBugStatus(body.Status)
+
+	issues, err := tracker.LoadIssues(proj.IssueDir)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, strings.ReplaceAll(err.Error(), `"`, `'`)), http.StatusInternalServerError)
+		return
+	}
+	bugs, err := loadRelatedToolBugs(issues)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, strings.ReplaceAll(err.Error(), `"`, `'`)), http.StatusInternalServerError)
+		return
+	}
+
+	var target *ToolBugReportView
+	for _, bug := range bugs {
+		if bug.FileName == fileName {
+			target = bug
+			break
+		}
+	}
+	if target == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	if err := writeBugStatus(target.FilePath, status); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, strings.ReplaceAll(err.Error(), `"`, `'`)), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(statusUpdateResponse{Status: status})
+}
+
+func writeBugStatus(path string, status string) error {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	var data map[string]interface{}
+	if err := json.Unmarshal(content, &data); err != nil {
+		return err
+	}
+	data["status"] = status
+
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(encoded, '\n'), 0644)
 }
 
 func (s *Server) handleWorkflowDesignerData(w http.ResponseWriter, r *http.Request, proj *tracker.Project) {
@@ -942,9 +1511,22 @@ func (s *Server) handleUpdateIssue(w http.ResponseWriter, r *http.Request, proj 
 		return
 	}
 
+	newSlug := found.Slug
+	if update.Title != nil {
+		newSlug = tracker.Slugify(*update.Title)
+		if newSlug != found.Slug {
+			dir := filepath.Dir(found.FilePath)
+			newPath := filepath.Join(dir, newSlug+".md")
+			if err := os.Rename(found.FilePath, newPath); err != nil {
+				http.Error(w, "rename failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "slug": newSlug})
 }
 
 // --- Comments ---
@@ -1187,8 +1769,41 @@ func (s *Server) handleApproveIssue(w http.ResponseWriter, r *http.Request, proj
 		return
 	}
 
+	resp := approvalResponse{
+		Status:        "ok",
+		HumanApproval: humanApproval,
+		Label:         approvalLabel(body.Status),
+	}
+	if humanApproval != "" {
+		sessionMap, _ := sessionsByIssueSlug([]*tracker.Issue{issue})
+		activeSessions := sessionMap[issue.Slug]
+		if len(activeSessions) == 0 {
+			resp.NotificationError = "no active agent session matched this issue"
+		} else {
+			target := activeSessions[0].Name
+			messageLines := []string{
+				fmt.Sprintf("human_approval:%s", body.Status),
+				fmt.Sprintf("approval_label:%s", approvalLabel(body.Status)),
+			}
+			if err := tmuxSendKeys(target, messageLines); err != nil {
+				resp.NotificationError = err.Error()
+			} else {
+				resp.NotifiedSession = target
+				resp.NotificationMessage = "approval notification sent to active agent session"
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "human_approval": humanApproval})
+	json.NewEncoder(w).Encode(resp)
+}
+
+func approvalLabel(status string) string {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return ""
+	}
+	return fmt.Sprintf("Human-approved for %s", status)
 }
 
 func resolveProjectWorkDir(proj *tracker.Project) string {
@@ -1573,9 +2188,18 @@ type DispatchResponse struct {
 	Steps   []DispatchStep `json:"steps"`
 }
 
+var dispatchAgentSession = startAgentSession
+
 func tmuxSessionName(slug string) string {
 	r := strings.NewReplacer("/", "-", ".", "-", " ", "-")
 	return "agent-" + r.Replace(slug)
+}
+
+func agentLaunchCommand(agentType string, promptPath string) string {
+	if agentType == "codex" {
+		return fmt.Sprintf("codex \"$(cat %q)\"", promptPath)
+	}
+	return agentType
 }
 
 func runStep(steps *[]DispatchStep, name string, cmd *exec.Cmd) bool {
@@ -1586,6 +2210,217 @@ func runStep(steps *[]DispatchStep, name string, cmd *exec.Cmd) bool {
 	}
 	*steps = append(*steps, DispatchStep{Name: name, Status: "ok"})
 	return true
+}
+
+func startAgentSession(proj *tracker.Project, session string, prompt string, issueSlug string, agentType string) DispatchResponse {
+	workDir := resolveProjectWorkDir(proj)
+
+	promptFile, err := os.CreateTemp("", "agent-prompt-*.txt")
+	if err != nil {
+		return DispatchResponse{Status: "error", Steps: []DispatchStep{{Name: "Create prompt file", Status: "error", Detail: err.Error()}}}
+	}
+	promptPath := promptFile.Name()
+	if _, err := promptFile.WriteString(prompt); err != nil {
+		promptFile.Close()
+		os.Remove(promptPath)
+		return DispatchResponse{Status: "error", Steps: []DispatchStep{{Name: "Write prompt file", Status: "error", Detail: err.Error()}}}
+	}
+	if err := promptFile.Close(); err != nil {
+		os.Remove(promptPath)
+		return DispatchResponse{Status: "error", Steps: []DispatchStep{{Name: "Close prompt file", Status: "error", Detail: err.Error()}}}
+	}
+
+	steps := []DispatchStep{}
+	sessionLogDir := filepath.Join(workDir, ".agent-logs", session)
+	rawLog := filepath.Join(sessionLogDir, "rawlog")
+	cliLog := filepath.Join(sessionLogDir, session+".clilog")
+
+	response := DispatchResponse{
+		Status:  "dispatched",
+		Prompt:  prompt,
+		Session: session,
+		LogFile: rawLog,
+		Steps:   steps,
+	}
+
+	if !runStep(&steps, fmt.Sprintf("Create tmux session in %s", workDir),
+		exec.Command("tmux", "new-session", "-d", "-s", session, "-c", workDir)) {
+		response.Status = "error"
+		response.Steps = steps
+		return response
+	}
+
+	windowName := session
+	if issueSlug != "" {
+		windowName = issueSlug
+	}
+	exec.Command("tmux", "rename-window", "-t", session, windowName).Run()
+
+	os.MkdirAll(sessionLogDir, 0755)
+	runStep(&steps, fmt.Sprintf("Log to %s", rawLog),
+		exec.Command("tmux", "pipe-pane", "-t", session, "-o", fmt.Sprintf("cat >> %s", rawLog)))
+	runStep(&steps, fmt.Sprintf("CLI log to %s", cliLog),
+		exec.Command("tmux", "send-keys", "-t", session, fmt.Sprintf("export ISSUE_CLI_LOG=%q", cliLog), "Enter"))
+
+	serverRoot, _ := os.Getwd()
+	runStep(&steps, fmt.Sprintf("Server root env %s", serverRoot),
+		exec.Command("tmux", "send-keys", "-t", session, fmt.Sprintf("export ISSUE_VIEWER_SERVER_PWD=%q", serverRoot), "Enter"))
+	if issueSlug != "" {
+		runStep(&steps, fmt.Sprintf("Issue slug env %s", issueSlug),
+			exec.Command("tmux", "send-keys", "-t", session, fmt.Sprintf("export ISSUE_VIEWER_ISSUE_SLUG=%q", issueSlug), "Enter"))
+	}
+
+	runStep(&steps, fmt.Sprintf("cd %s", workDir),
+		exec.Command("tmux", "send-keys", "-t", session, fmt.Sprintf("cd %q", workDir), "Enter"))
+
+	if ws := proj.I3Workspace; ws != "" {
+		runStep(&steps, fmt.Sprintf("Switch to workspace %s", ws),
+			exec.Command("i3-msg", "workspace", ws))
+	}
+
+	if !runStep(&steps, "Open alacritty",
+		exec.Command("i3-msg", "exec", fmt.Sprintf("alacritty -e tmux attach -t %s", session))) {
+		response.Status = "error"
+		response.Steps = steps
+		return response
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	if agentType == "codex" {
+		runStep(&steps, "Start codex with prompt file",
+			exec.Command("tmux", "send-keys", "-t", session, agentLaunchCommand(agentType, promptPath), "Enter"))
+		// tmux send-keys returns before the shell in the pane expands $(cat ...).
+		// Keep the temp file around a bit longer so codex can read it reliably.
+		time.AfterFunc(2*time.Minute, func() {
+			_ = os.Remove(promptPath)
+		})
+	} else {
+		runStep(&steps, fmt.Sprintf("Start %s (interactive)", agentType),
+			exec.Command("tmux", "send-keys", "-t", session, agentLaunchCommand(agentType, promptPath), "Enter"))
+		time.Sleep(3 * time.Second)
+		runStep(&steps, "Load prompt into tmux buffer",
+			exec.Command("tmux", "load-buffer", promptPath))
+		runStep(&steps, fmt.Sprintf("Paste prompt to %s", agentType),
+			exec.Command("tmux", "paste-buffer", "-t", session))
+		time.Sleep(200 * time.Millisecond)
+		runStep(&steps, "Submit prompt",
+			exec.Command("tmux", "send-keys", "-t", session, "Enter"))
+		_ = os.Remove(promptPath)
+	}
+
+	response.Steps = steps
+	return response
+}
+
+func buildRetrosReviewPrompt(proj *tracker.Project, retros []*RetroEntry, bugs []*ToolBugReportView) string {
+	retroLines := make([]string, 0, len(retros))
+	for _, retro := range retros {
+		title := retro.IssueTitle
+		if strings.TrimSpace(title) == "" {
+			title = retro.FileName
+		}
+		retroLines = append(retroLines, fmt.Sprintf("- %s | issue=%s | status=%s | review_status=%s | file=retros/%s",
+			title,
+			valueOrDash(retro.IssueSlug),
+			valueOrDash(retro.Status),
+			normalizeRetroReviewStatus(retro.ReviewStatus),
+			retro.FileName))
+	}
+	if len(retroLines) == 0 {
+		retroLines = append(retroLines, "- none")
+	}
+
+	bugLines := make([]string, 0, len(bugs))
+	for _, bug := range bugs {
+		bugLines = append(bugLines, fmt.Sprintf("- issue=%s | status=%s | tool=%s | file=bugs/%s | desc=%s",
+			valueOrDash(bug.IssueSlug),
+			normalizeBugStatus(bug.Status),
+			valueOrDash(bug.Tool),
+			bug.FileName,
+			trimSnippet(bug.Description, 160)))
+	}
+	if len(bugLines) == 0 {
+		bugLines = append(bugLines, "- none")
+	}
+
+	return fmt.Sprintf(`Review the project feedback files for %s.
+
+Your job:
+- scan the project retrospectives under retros/
+- scan related bug reports under bugs/
+- decide which reports describe real issues, workflow gaps, duplicated reports, or noise
+- suggest concrete fixes, workflow changes, or code changes
+- identify items that should become actual tracked issues
+- if you are confident a retrospective has been reviewed, mark that file with ReviewStatus: processed
+- if you are confident a bug report is resolved or should not be acted on, update its JSON status to fixed or wontfix
+- leave uncertain items open
+
+Do not mention issue-cli in your writeup. Focus on the files, the underlying problems, and ideas to fix them.
+
+Files to review:
+Retrospectives:
+%s
+
+Bug reports:
+%s
+
+Expected output:
+1. A short triage summary of the real issues and duplicates.
+2. Concrete suggestions for fixes or workflow changes.
+3. Which files you marked processed, fixed, or wontfix.
+`, proj.Name, strings.Join(retroLines, "\n"), strings.Join(bugLines, "\n"))
+}
+
+func valueOrDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
+	}
+	return s
+}
+
+func trimSnippet(s string, max int) string {
+	s = strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
+}
+
+func (s *Server) handleRetrosReviewDispatch(w http.ResponseWriter, r *http.Request, proj *tracker.Project) {
+	issues, err := tracker.LoadIssues(proj.IssueDir)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	retros, err := loadRetrospectives(proj)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	bugs, err := loadRelatedToolBugs(issues)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	agentType := "claude"
+	var body struct {
+		Agent string `json:"agent"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err == nil && strings.TrimSpace(body.Agent) != "" {
+		agentType = body.Agent
+	}
+
+	prompt := buildRetrosReviewPrompt(proj, retros, bugs)
+	session := tmuxSessionName(proj.Slug + "-retros-review")
+	resp := dispatchAgentSession(proj, session, prompt, "", agentType)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handleDispatchAgent(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
@@ -1610,97 +2445,9 @@ func (s *Server) handleDispatchAgent(w http.ResponseWriter, r *http.Request, pro
 	wf := proj.LoadWorkflowForIssue(issue)
 	prompt := buildAgentPrompt(issue, wf)
 	session := tmuxSessionName(slug)
-
-	workDir := resolveProjectWorkDir(proj)
-
-	// Write prompt to temp file (needed because tmux send-keys can't handle multi-line reliably)
-	promptFile, err := os.CreateTemp("", "agent-prompt-*.txt")
-	if err != nil {
-		http.Error(w, "failed to create temp file: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	promptFile.WriteString(prompt)
-	promptFile.Close()
-
-	steps := []DispatchStep{}
-	sessionLogDir := filepath.Join(workDir, ".agent-logs", session)
-	rawLog := filepath.Join(sessionLogDir, "rawlog")
-	cliLog := filepath.Join(sessionLogDir, session+".clilog")
-	respond := func(status string) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(DispatchResponse{Status: status, Prompt: prompt, Session: session, LogFile: rawLog, Steps: steps})
-	}
-
-	// Step 1: Create tmux session (detached) in project dir
-	if !runStep(&steps, fmt.Sprintf("Create tmux session in %s", workDir),
-		exec.Command("tmux", "new-session", "-d", "-s", session, "-c", workDir)) {
-		respond("error")
-		return
-	}
-
-	// Step 2: Name the tmux window with the issue slug
-	exec.Command("tmux", "rename-window", "-t", session, slug).Run()
-
-	// Step 3: Create log directory and pipe session output to rawlog
-	os.MkdirAll(sessionLogDir, 0755)
-	runStep(&steps, fmt.Sprintf("Log to %s", rawLog),
-		exec.Command("tmux", "pipe-pane", "-t", session, "-o", fmt.Sprintf("cat >> %s", rawLog)))
-
-	// Step 4: Set ISSUE_CLI_LOG env var so issue-cli writes to clilog
-	runStep(&steps, fmt.Sprintf("CLI log to %s", cliLog),
-		exec.Command("tmux", "send-keys", "-t", session, fmt.Sprintf("export ISSUE_CLI_LOG=%q", cliLog), "Enter"))
-
-	serverRoot, _ := os.Getwd()
-	runStep(&steps, fmt.Sprintf("Server root env %s", serverRoot),
-		exec.Command("tmux", "send-keys", "-t", session, fmt.Sprintf("export ISSUE_VIEWER_SERVER_PWD=%q", serverRoot), "Enter"))
-	runStep(&steps, fmt.Sprintf("Issue slug env %s", issue.Slug),
-		exec.Command("tmux", "send-keys", "-t", session, fmt.Sprintf("export ISSUE_VIEWER_ISSUE_SLUG=%q", issue.Slug), "Enter"))
-
-	// Step 5: Send explicit cd (belt and suspenders)
-	runStep(&steps, fmt.Sprintf("cd %s", workDir),
-		exec.Command("tmux", "send-keys", "-t", session, fmt.Sprintf("cd %q", workDir), "Enter"))
-
-	// Step 3: Switch i3 workspace
-	if ws := proj.I3Workspace; ws != "" {
-		runStep(&steps, fmt.Sprintf("Switch to workspace %s", ws),
-			exec.Command("i3-msg", "workspace", ws))
-	}
-
-	// Step 4: Open alacritty attached to tmux session
-	if !runStep(&steps, "Open alacritty",
-		exec.Command("i3-msg", "exec", fmt.Sprintf("alacritty -e tmux attach -t %s", session))) {
-		respond("error")
-		return
-	}
-
-	// Step 5: Wait for shell to be ready in tmux
-	time.Sleep(500 * time.Millisecond)
-
-	// Step 6: Launch agent with prompt
-	if agentType == "codex" {
-		// Codex accepts prompt as CLI argument — pass via file to avoid send-keys/paste issues
-		cmd := fmt.Sprintf("codex \"$(cat %s)\"", promptFile.Name())
-		runStep(&steps, "Start codex with prompt",
-			exec.Command("tmux", "send-keys", "-t", session, cmd, "Enter"))
-	} else {
-		// Claude: start interactive, then paste prompt
-		runStep(&steps, fmt.Sprintf("Start %s (interactive)", agentType),
-			exec.Command("tmux", "send-keys", "-t", session, agentType, "Enter"))
-
-		time.Sleep(3 * time.Second)
-
-		runStep(&steps, "Load prompt into tmux buffer",
-			exec.Command("tmux", "load-buffer", promptFile.Name()))
-
-		runStep(&steps, fmt.Sprintf("Paste prompt to %s", agentType),
-			exec.Command("tmux", "paste-buffer", "-t", session))
-
-		time.Sleep(200 * time.Millisecond)
-		runStep(&steps, "Submit prompt",
-			exec.Command("tmux", "send-keys", "-t", session, "Enter"))
-	}
-
-	respond("dispatched")
+	resp := dispatchAgentSession(proj, session, prompt, issue.Slug, agentType)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 // mergeSubdirSystems merges subdirectory names into the systems list so that

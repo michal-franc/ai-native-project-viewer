@@ -177,9 +177,9 @@ func main() {
 		runDone(proj, cmdArgs[0])
 	case "comment":
 		requireArg(cmdArgs, "comment", "<slug>")
-		text := flagValue(cmdArgs[1:], "--text")
+		text := textFlagValue(cmdArgs[1:], "--text")
 		if text == "" {
-			text = flagValue(cmdArgs[1:], "--body")
+			text = textFlagValue(cmdArgs[1:], "--body")
 		}
 		if text == "" {
 			// Treat all remaining args after slug as the comment text
@@ -229,20 +229,22 @@ func main() {
 		runStats(proj)
 	case "append":
 		requireArg(cmdArgs, "append", "<slug>")
-		text := flagValue(cmdArgs[1:], "--body")
+		text := textFlagValue(cmdArgs[1:], "--body")
+		section := flagValue(cmdArgs[1:], "--section")
+		force := hasFlag(cmdArgs[1:], "--force")
 		if text == "" {
-			text = flagValue(cmdArgs[1:], "--text")
+			text = textFlagValue(cmdArgs[1:], "--text")
 		}
 		if text == "" {
-			fatal("append requires --body\n\nExample:\n  issue-cli append <slug> --body \"## Test Plan\n\n### Automated\n- test 1\"")
+			fatal("append requires --body\n\nExamples:\n  issue-cli append <slug> --section \"Design\" --body \"- [ ] edge case covered\"\n  issue-cli append <slug> --body \"## Test Plan\n\n### Automated\n- test 1\"")
 		}
 		proj := loadProject(configPath, projectSlug)
-		runAppend(proj, cmdArgs[0], text)
+		runAppend(proj, cmdArgs[0], section, text, force)
 	case "retrospective":
 		requireArg(cmdArgs, "retrospective", "<slug>")
-		text := flagValue(cmdArgs[1:], "--body")
+		text := textFlagValue(cmdArgs[1:], "--body")
 		if text == "" {
-			text = flagValue(cmdArgs[1:], "--text")
+			text = textFlagValue(cmdArgs[1:], "--text")
 		}
 		if text == "" {
 			var parts []string
@@ -413,6 +415,32 @@ func flagValue(args []string, flag string) string {
 	return ""
 }
 
+func textFlagValue(args []string, flag string) string {
+	return normalizeEscapedText(flagValue(args, flag))
+}
+
+func normalizeEscapedText(s string) string {
+	if s == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(
+		`\r\n`, "\n",
+		`\n`, "\n",
+		`\r`, "\r",
+		`\t`, "\t",
+	)
+	return replacer.Replace(s)
+}
+
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
 func requireArg(args []string, cmd, argName string) {
 	if len(args) == 0 {
 		fatal("%s requires %s\n\nExample:\n  issue-cli %s <slug>", cmd, argName, cmd)
@@ -509,7 +537,7 @@ Commands:
   list                 List issues with filters (--status open|closed|<name>)
   search <query>       Search issues (supports regex, e.g. "foo|bar")
   update <slug>        Replace issue body (--body "content"), preserves frontmatter
-  append <slug>        Append content to issue body (--body "## Section\ncontent")
+  append <slug>        Append content to issue body (--body "...", or --section "X" --body "...")
   retrospective <slug> Save workflow feedback under retros/ in the project
   stats                Project health overview
   report-bug <desc>    Report a bug in issue-cli itself
@@ -857,6 +885,11 @@ func runStart(proj *tracker.Project, slug, assignee string) {
 		assignee = agentNameForSlug(slug)
 	}
 
+	next := wf.NextStatus(issue.Status)
+	if err := startPreflight(wf, issue, next); err != nil {
+		fatal("%v", err)
+	}
+
 	started, err := wf.StartIssueOnce(issue.FilePath, slug, assignee)
 	if err != nil {
 		fatal("%v", err)
@@ -891,8 +924,8 @@ func startPreflight(wf *tracker.WorkflowConfig, issue *tracker.Issue, next strin
 		return nil
 	}
 	if approvalStatus := wf.RequiredHumanApproval(issue.Status, next); approvalStatus != "" && !strings.EqualFold(issue.HumanApproval, approvalStatus) {
-		return fmt.Errorf("Cannot start %s from %q — it is not human-approved for %q.\n\nApprove %q in the issue viewer first, then rerun:\n  issue-cli start %s",
-			issue.Slug, issue.Status, approvalStatus, approvalStatus, issue.Slug)
+		return fmt.Errorf("Cannot start %s: human approval for %q is missing.\nNo changes were made.\n\nNext step: approve %q in the issue viewer, then rerun:\n  issue-cli start %s",
+			issue.Slug, approvalStatus, approvalStatus, issue.Slug)
 	}
 	return nil
 }
@@ -1257,14 +1290,21 @@ func runUpdate(proj *tracker.Project, slug string, args []string) {
 	update := tracker.IssueUpdate{}
 	changed := false
 
+	t := flagValue(args, "--title")
+	if t != "" {
+		update.Title = &t
+		changed = true
+	}
+
 	b := flagValue(args, "--body")
+	b = normalizeEscapedText(b)
 	if b != "" {
 		update.Body = &b
 		changed = true
 	}
 
 	if !changed {
-		fatal("update requires --body\n\nExample:\n  issue-cli update %s --body \"new body content\"", slug)
+		fatal("update requires --title and/or --body\n\nExample:\n  issue-cli update %s --title \"new title\" --body \"new body content\"", slug)
 	}
 
 	if err := tracker.UpdateIssueFrontmatter(issue.FilePath, update); err != nil {
@@ -1436,15 +1476,14 @@ func runSearch(proj *tracker.Project, query string) {
 	}
 }
 
-func runAppend(proj *tracker.Project, slug, text string) {
+func runAppend(proj *tracker.Project, slug, section, text string, force bool) {
 	issue, _ := findIssue(proj, slug)
 
 	_, _, err := tracker.UpdateIssueBody(issue.FilePath, func(body string) (string, bool, error) {
-		body = strings.TrimRight(body, "\n")
-		if body == "" {
-			return text, true, nil
+		if strings.TrimSpace(section) != "" {
+			return tracker.AppendIssueBodyToSection(body, section, text, force)
 		}
-		return body + "\n" + text, true, nil
+		return tracker.AppendIssueBody(body, text)
 	})
 	if err != nil {
 		fatal("Failed to append: %v", err)

@@ -206,6 +206,7 @@ func LoadIssues(dir string) ([]*Issue, error) {
 }
 
 type IssueUpdate struct {
+	Title         *string  `json:"title,omitempty"`
 	Status        *string  `json:"status,omitempty"`
 	Priority      *string  `json:"priority,omitempty"`
 	Version       *string  `json:"version,omitempty"`
@@ -215,6 +216,76 @@ type IssueUpdate struct {
 	DoneAt        *string  `json:"done_at,omitempty"`
 	Labels        []string `json:"labels,omitempty"`
 	Body          *string  `json:"body,omitempty"`
+}
+
+func AppendIssueBody(body, text string) (string, bool, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return body, false, nil
+	}
+
+	existing := map[string]bool{}
+	for _, match := range findAllHeadings(body) {
+		existing[match.Key] = true
+	}
+
+	var duplicates []string
+	seen := map[string]bool{}
+	for _, match := range findAllHeadings(text) {
+		if existing[match.Key] && !seen[match.Key] {
+			duplicates = append(duplicates, strings.TrimSpace(match.Line))
+			seen[match.Key] = true
+		}
+	}
+	if len(duplicates) > 0 {
+		return body, false, fmt.Errorf("append would introduce duplicate heading(s): %s\n\nUse --section to target an existing section instead", strings.Join(duplicates, ", "))
+	}
+
+	body = strings.TrimRight(body, "\n")
+	if body == "" {
+		return text + "\n", true, nil
+	}
+	return body + "\n" + text + "\n", true, nil
+}
+
+func AppendIssueBodyToSection(body, section, text string, force bool) (string, bool, error) {
+	matches := findHeadingMatches(body, section)
+	if len(matches) > 1 && !force {
+		var labels []string
+		for _, match := range matches {
+			labels = append(labels, fmt.Sprintf("%s (line %d)", match.Line, match.StartLine+1))
+		}
+		return body, false, fmt.Errorf("multiple matching sections for %q: %s\n\nRerun with --force to merge into the first matching section", section, strings.Join(labels, ", "))
+	}
+	if len(matches) > 1 {
+		nextBody, changed := appendContentToMatch(body, matches[0], text)
+		return nextBody, changed, nil
+	}
+	if len(matches) == 1 {
+		nextBody, changed := appendContentToMatch(body, matches[0], text)
+		return nextBody, changed, nil
+	}
+
+	nextBody, changed := appendToSection(body, section, text)
+	return nextBody, changed, nil
+}
+
+func findAllHeadings(body string) []headingMatch {
+	lines := strings.Split(body, "\n")
+	var matches []headingMatch
+	for i, line := range lines {
+		level, title, ok := parseHeadingLine(line)
+		if !ok {
+			continue
+		}
+		matches = append(matches, headingMatch{
+			StartLine: i,
+			Level:     level,
+			Line:      strings.TrimSpace(line),
+			Key:       normalizeHeadingKey(title),
+		})
+	}
+	return matches
 }
 
 // UpdateIssueBody applies a body transformation while holding the issue lock.
@@ -235,7 +306,7 @@ func UpdateIssueBody(filePath string, update func(body string) (string, bool, er
 			return fmt.Errorf("no frontmatter in %s", filePath)
 		}
 
-		parts := strings.SplitN(content[3:], "---", 2)
+		parts := strings.SplitN(content[3:], "\n---", 2)
 		if len(parts) < 2 {
 			return fmt.Errorf("invalid frontmatter in %s", filePath)
 		}
@@ -260,7 +331,7 @@ func UpdateIssueBody(filePath string, update func(body string) (string, bool, er
 		var out strings.Builder
 		out.WriteString("---")
 		out.WriteString(fmRaw)
-		out.WriteString("---")
+		out.WriteString("\n---")
 		out.WriteString("\n")
 		out.WriteString(nextBody)
 		out.WriteString("\n")
@@ -325,6 +396,9 @@ func updateIssueFrontmatterLocked(filePath string, update IssueUpdate) error {
 		return strings.TrimRight(fm, "\n") + "\n" + buf.String()
 	}
 
+	if update.Title != nil {
+		fmRaw = setScalar(fmRaw, "title", *update.Title)
+	}
 	if update.Status != nil {
 		fmRaw = setScalar(fmRaw, "status", *update.Status)
 	}
@@ -383,7 +457,7 @@ func updateIssueFrontmatterLocked(filePath string, update IssueUpdate) error {
 	var out strings.Builder
 	out.WriteString("---")
 	out.WriteString(fmRaw)
-	out.WriteString("---")
+	out.WriteString("\n---")
 	out.WriteString(body)
 
 	info, err := os.Stat(filePath)

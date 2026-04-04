@@ -167,8 +167,11 @@ func TestStartPreflightRequiresApprovalBeforeClaim(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected missing approval to block start")
 	}
-	if !strings.Contains(err.Error(), "human-approved for \"in progress\"") {
+	if !strings.Contains(err.Error(), "human approval for \"in progress\" is missing") {
 		t.Fatalf("error = %q, want approval guidance", err)
+	}
+	if !strings.Contains(err.Error(), "No changes were made.") {
+		t.Fatalf("error = %q, want explicit no-mutation message", err)
 	}
 }
 
@@ -192,6 +195,54 @@ func TestStartPreflightAllowsApprovedBacklog(t *testing.T) {
 
 	if err := startPreflight(wf, issue, "in progress"); err != nil {
 		t.Fatalf("startPreflight returned error: %v", err)
+	}
+}
+
+func TestNormalizeEscapedText(t *testing.T) {
+	got := normalizeEscapedText(`line1\nline2\r\nline3\tend`)
+	want := "line1\nline2\nline3\tend"
+	if got != want {
+		t.Fatalf("normalizeEscapedText = %q, want %q", got, want)
+	}
+}
+
+func TestRunAppendRejectsEscapedDuplicateHeading(t *testing.T) {
+	dir := t.TempDir()
+	issuesDir := filepath.Join(dir, "issues")
+	systemDir := filepath.Join(issuesDir, "CLI")
+	if err := os.MkdirAll(systemDir, 0755); err != nil {
+		t.Fatalf("mkdir issue dir: %v", err)
+	}
+
+	issuePath := filepath.Join(systemDir, "sample.md")
+	issue := strings.TrimSpace(`
+---
+title: "sample"
+status: "in progress"
+system: "CLI"
+---
+
+## Design
+Existing note
+`)
+	if err := os.WriteFile(issuePath, []byte(issue), 0644); err != nil {
+		t.Fatalf("write issue: %v", err)
+	}
+
+	body := normalizeEscapedText(`## Design\n- [ ] escaped duplicate`)
+	_, _, err := tracker.UpdateIssueBody(issuePath, func(existing string) (string, bool, error) {
+		return tracker.AppendIssueBody(existing, body)
+	})
+	if err == nil {
+		t.Fatal("expected duplicate heading error")
+	}
+	if !strings.Contains(err.Error(), "duplicate heading") {
+		t.Fatalf("error = %q, want duplicate heading guidance", err)
+	}
+
+	finalIssue := loadIssueByPath(t, issuesDir, issuePath)
+	if strings.Contains(finalIssue.BodyRaw, "escaped duplicate") {
+		t.Fatalf("issue body unexpectedly changed:\n%s", finalIssue.BodyRaw)
 	}
 }
 
