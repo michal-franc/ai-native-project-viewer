@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -13,7 +14,7 @@ func ParseFrontmatter(content string, dest interface{}) (body string, err error)
 		return "", fmt.Errorf("missing frontmatter delimiter")
 	}
 
-	parts := strings.SplitN(content[3:], "---", 2)
+	parts := strings.SplitN(content[3:], "\n---", 2)
 	if len(parts) < 2 {
 		return "", fmt.Errorf("missing closing frontmatter delimiter")
 	}
@@ -24,6 +25,8 @@ func ParseFrontmatter(content string, dest interface{}) (body string, err error)
 
 	return strings.TrimSpace(parts[1]), nil
 }
+
+var multiHyphen = regexp.MustCompile(`-{2,}`)
 
 // Slugify converts a string to a URL-safe slug.
 func Slugify(s string) string {
@@ -37,5 +40,7 @@ func Slugify(s string) string {
 		}
 		return -1
 	}, s)
+	s = multiHyphen.ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
 	return s
 }

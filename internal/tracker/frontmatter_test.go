@@ -90,7 +90,7 @@ func TestSlugify(t *testing.T) {
 		{"underscores", "snake_case_title", "snake-case-title"},
 		{"dots", "version.1.0", "version-1-0"},
 		{"unicode", "caf\u00e9 latte", "caf-latte"},
-		{"multiple spaces", "too   many   spaces", "too---many---spaces"},
+		{"multiple spaces", "too   many   spaces", "too-many-spaces"},
 		{"hyphens preserved", "already-slugified", "already-slugified"},
 		{"numbers", "issue 42", "issue-42"},
 		{"empty", "", ""},
