@@ -30,7 +30,12 @@
 
         <div class="detail-layout">
             <div>
-                <h1 class="detail-title">{{.Issue.Title}}</h1>
+                <h1 class="detail-title" id="issue-title" onclick="editTitle()">{{.Issue.Title}} <span class="title-edit-icon">&#9998;</span></h1>
+                <div class="title-editor" id="title-editor" style="display:none">
+                    <input type="text" class="title-input" id="title-input" value="{{.Issue.Title}}">
+                    <button class="body-save-btn" onclick="saveTitle()">Save</button>
+                    <button class="body-tab" onclick="cancelTitleEdit()">Cancel</button>
+                </div>
                 <div class="body-toolbar">
                     <button class="body-tab active" id="btn-preview" onclick="showPreview()">Preview</button>
                     <button class="body-tab" id="btn-edit" onclick="showEditor()">Edit</button>
@@ -232,6 +237,40 @@
         document.getElementById('btn-edit').classList.remove('active');
     }
 
+    function editTitle() {
+        document.getElementById('issue-title').style.display = 'none';
+        document.getElementById('title-editor').style.display = 'flex';
+        const input = document.getElementById('title-input');
+        input.focus();
+        input.select();
+    }
+
+    function saveTitle() {
+        const title = document.getElementById('title-input').value.trim();
+        if (!title) return;
+        saveUpdate({ title: title }, function(data) {
+            const newSlug = data && data.slug ? data.slug : null;
+            if (newSlug && newSlug !== '{{.Issue.Slug}}') {
+                window.location.href = '{{.Prefix}}/issue/' + newSlug + window.location.search;
+            } else {
+                location.reload();
+            }
+        });
+    }
+
+    function cancelTitleEdit() {
+        document.getElementById('title-editor').style.display = 'none';
+        document.getElementById('issue-title').style.display = '';
+    }
+
+    document.addEventListener('keydown', function(e) {
+        const editor = document.getElementById('title-editor');
+        if (editor.style.display !== 'none' && editor.style.display !== '') {
+            if (e.key === 'Enter') { e.preventDefault(); saveTitle(); }
+            if (e.key === 'Escape') { cancelTitleEdit(); }
+        }
+    });
+
     function saveBody() {
         const text = document.getElementById('body-textarea').value;
         saveUpdate({ body: text }, function() {
@@ -248,8 +287,8 @@
             const toast = document.getElementById('save-toast');
             toast.textContent = res.ok ? 'Saved' : 'Error';
             toast.className = 'save-toast ' + (res.ok ? 'show' : 'show error');
-            setTimeout(() => { toast.className = 'save-toast'; }, 1500);
-            if (res.ok && onSuccess) onSuccess();
+            setTimeout(() => { toast.className = 'save-toast'; }, 3000);
+            if (res.ok && onSuccess) res.json().then(onSuccess).catch(() => onSuccess(null));
         });
     }
 
@@ -439,7 +478,7 @@
         const toast = document.getElementById('save-toast');
         toast.textContent = msg;
         toast.className = 'save-toast show' + (isError ? ' error' : '');
-        setTimeout(() => { toast.className = 'save-toast'; }, 1500);
+        setTimeout(() => { toast.className = 'save-toast'; }, 3000);
     }
 
     function escapeHtml(s) {
@@ -496,7 +535,17 @@
                 btn.classList.remove('approved');
                 check.innerHTML = '&#9744;';
             }
-            showToast(data.human_approval ? 'Human approval set' : 'Human approval removed');
+            if (data.human_approval) {
+                if (data.notified_session) {
+                    showToast('Human approval set and sent to bot session ' + data.notified_session);
+                } else if (data.notification_error) {
+                    showToast('Human approval set, but bot notification was not delivered: ' + data.notification_error);
+                } else {
+                    showToast('Human approval set');
+                }
+            } else {
+                showToast('Human approval removed');
+            }
         });
     }
 

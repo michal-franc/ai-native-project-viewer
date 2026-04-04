@@ -369,6 +369,36 @@ a:hover { text-decoration: underline; }
     margin-bottom: 16px;
     padding-bottom: 16px;
     border-bottom: 1px solid var(--border);
+    cursor: pointer;
+}
+.detail-title:hover .title-edit-icon {
+    opacity: 1;
+}
+.title-edit-icon {
+    font-size: 16px;
+    opacity: 0;
+    color: var(--text-secondary);
+    transition: opacity 0.15s;
+    vertical-align: middle;
+    margin-left: 4px;
+}
+.title-editor {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+}
+.title-input {
+    font-size: 28px;
+    font-weight: 600;
+    flex: 1;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 8px;
 }
 
 .detail-body {
@@ -726,12 +756,19 @@ a:hover { text-decoration: underline; }
     padding: 14px 16px;
     color: var(--text);
     transition: box-shadow 0.15s, border-color 0.15s;
+    height: 80px;
+    overflow: hidden;
 }
 
 .board-card:hover {
     border-color: var(--text-link);
     box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     text-decoration: none;
+}
+
+.board-card.board-card-agent-active {
+    border-left: 3px solid rgba(34, 197, 94, 0.7);
+    background: rgba(34, 197, 94, 0.04);
 }
 
 .board-card-id {
@@ -741,6 +778,11 @@ a:hover { text-decoration: underline; }
     font-size: 12px;
     color: var(--text-secondary);
     margin-bottom: 6px;
+    overflow: hidden;
+    white-space: nowrap;
+}
+.board-card-system {
+    flex-shrink: 0;
 }
 
 .board-card-dot {
@@ -751,22 +793,22 @@ a:hover { text-decoration: underline; }
     flex-shrink: 0;
 }
 
-.board-card-slug {
-    opacity: 0.7;
-}
-
 .board-card-title {
     font-size: 14px;
     font-weight: 600;
     line-height: 1.4;
     color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .board-card-labels {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 4px;
-    margin-top: 10px;
+    overflow: hidden;
+    min-width: 0;
 }
 
 .board-label {
@@ -1325,11 +1367,26 @@ a:hover { text-decoration: underline; }
     border-color: var(--text-link);
 }
 
+/* Reusable action button — subtle green, matches dispatch button palette */
+.btn-action {
+    background: rgba(34, 197, 94, 0.1);
+    color: #22c55e;
+    border: 1px solid rgba(34, 197, 94, 0.3);
+    border-radius: 6px;
+    padding: 6px 20px;
+    cursor: pointer;
+    font-size: 14px;
+}
+.btn-action:hover {
+    background: rgba(34, 197, 94, 0.2);
+    border-color: rgba(34, 197, 94, 0.5);
+}
+
 .body-save-btn {
     align-self: flex-end;
-    background: var(--accent);
-    color: #fff;
-    border: none;
+    background: rgba(34, 197, 94, 0.1);
+    color: #22c55e;
+    border: 1px solid rgba(34, 197, 94, 0.3);
     border-radius: 6px;
     padding: 6px 20px;
     font-size: 14px;
@@ -1338,7 +1395,8 @@ a:hover { text-decoration: underline; }
 }
 
 .body-save-btn:hover {
-    opacity: 0.9;
+    background: rgba(34, 197, 94, 0.2);
+    border-color: rgba(34, 197, 94, 0.5);
 }
 
 /* Inline editing */
@@ -1784,7 +1842,7 @@ select.modal-input option {
     position: fixed;
     bottom: 24px;
     right: 24px;
-    background: var(--accent);
+    background: #166534;
     color: #fff;
     padding: 8px 20px;
     border-radius: 6px;

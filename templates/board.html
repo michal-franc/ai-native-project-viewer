@@ -30,6 +30,10 @@
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M1 1h5v2H3v10h4v2H1V1zm9 0h5v14H8v-2h4V3H10V1zM5 5h2v1H5V5zm0 2h2v1H5V7zm0 2h2v1H5V9z"/></svg>
                     Docs
                 </a>
+                <a href="{{.Prefix}}/retros" class="view-tab">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M3 2.75A1.75 1.75 0 014.75 1h6.5A1.75 1.75 0 0113 2.75v10.5A1.75 1.75 0 0111.25 15h-6.5A1.75 1.75 0 013 13.25V2.75zm2 .75v1.25h6V3.5H5zm0 3v1.25h6V6.5H5zm0 3v1.25h4V9.5H5z"/></svg>
+                    Retros
+                </a>
                 <a href="{{.Prefix}}/workflow-designer" class="view-tab">
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2.5 3.25A1.25 1.25 0 013.75 2h2.5A1.25 1.25 0 017.5 3.25v2.5A1.25 1.25 0 016.25 7h-2.5A1.25 1.25 0 012.5 5.75v-2.5zm6 0A1.25 1.25 0 019.75 2h2.5a1.25 1.25 0 011.25 1.25v2.5A1.25 1.25 0 0112.25 7h-2.5A1.25 1.25 0 018.5 5.75v-2.5zm-6 6A1.25 1.25 0 013.75 8h2.5A1.25 1.25 0 017.5 9.25v2.5A1.25 1.25 0 016.25 13h-2.5a1.25 1.25 0 01-1.25-1.25v-2.5zm9.25.75a.75.75 0 010 1.5H10v1.75a.75.75 0 01-1.5 0V11.5H6.75a.75.75 0 010-1.5H8.5V8.25a.75.75 0 011.5 0V10h1.75z"/></svg>
                     Workflow
@@ -101,29 +105,17 @@
                 <div class="board-column-cards">
                     {{range .Issues}}
                     <div class="board-card-wrapper" data-slug="{{.Slug}}">
-                        <a href="{{$.Prefix}}/issue/{{.Slug}}?from=board{{if $.Version}}%3Fversion%3D{{$.Version}}{{end}}" class="board-card{{if .Assignee}} board-card-assigned{{end}}" draggable="true" data-slug="{{.Slug}}" {{if .Assignee}}style="border-left: 3px solid {{assigneeColor .Assignee}}"{{end}}>
+                        <a href="{{$.Prefix}}/issue/{{.Slug}}?from=board{{if $.Version}}%3Fversion%3D{{$.Version}}{{end}}" class="board-card{{if .HasActiveAgent}} board-card-agent-active{{end}}" draggable="true" data-slug="{{.Slug}}">
                             <div class="board-card-id">
                                 <span class="board-card-dot" style="border-color:{{statusColor .Status}}"></span>
-                                {{if .System}}<span>{{.System}}</span>{{end}}
-                                <span class="board-card-slug">#{{.Slug}}</span>
-                            </div>
-                            <div class="board-card-title">{{.Title}}</div>
-                            {{if .HasActiveAgent}}
-                            <div class="agent-active-chip board-agent-active">{{len .ActiveSessions}} agent active{{if ne (len .ActiveSessions) 1}}s{{end}}</div>
-                            {{end}}
-                            {{if .Labels}}
-                            <div class="board-card-labels">
-                                {{range .Labels}}
-                                <span class="board-label">{{.}}</span>
+                                {{if .System}}<span class="board-card-system">{{.System}}</span>{{end}}
+                                {{if .Labels}}
+                                <div class="board-card-labels">
+                                    {{range .Labels}}<span class="board-label">{{.}}</span>{{end}}
+                                </div>
                                 {{end}}
                             </div>
-                            {{end}}
-                            {{if .Assignee}}
-                            <div class="board-card-assignee">
-                                <span class="assignee-dot" style="background:{{assigneeColor .Assignee}}"></span>
-                                {{.Assignee}}
-                            </div>
-                            {{end}}
+                            <div class="board-card-title">{{.Title}}</div>
                         </a>
                         <div class="board-card-dispatch" onclick="event.stopPropagation(); toggleAgentPicker(this)">
                             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 1.75a.75.75 0 00-1.19.61v11.28a.75.75 0 001.19.61l9.5-5.64a.75.75 0 000-1.22L1.5 1.75z"/></svg>
@@ -360,7 +352,7 @@
                 const toast = document.getElementById('save-toast');
                 toast.textContent = res.ok ? 'Moved to ' + newStatus : 'Error';
                 toast.className = 'save-toast ' + (res.ok ? 'show' : 'show error');
-                setTimeout(() => { toast.className = 'save-toast'; }, 1500);
+                setTimeout(() => { toast.className = 'save-toast'; }, 3000);
             });
         });
     });
@@ -403,7 +395,7 @@
                 const toast = document.getElementById('save-toast');
                 toast.textContent = res.ok ? 'Moved to ' + newStatus : 'Error';
                 toast.className = 'save-toast ' + (res.ok ? 'show' : 'show error');
-                setTimeout(() => { toast.className = 'save-toast'; }, 1500);
+                setTimeout(() => { toast.className = 'save-toast'; }, 3000);
             });
         });
     });
@@ -557,7 +549,7 @@
         const toast = document.getElementById('save-toast');
         toast.textContent = msg;
         toast.className = 'save-toast ' + (isError ? 'show error' : 'show');
-        setTimeout(() => { toast.className = 'save-toast'; }, 1500);
+        setTimeout(() => { toast.className = 'save-toast'; }, 3000);
     }
 
     // Image paste/drop upload for body textarea
