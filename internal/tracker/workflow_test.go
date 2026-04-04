@@ -261,6 +261,17 @@ func TestAppendToSection(t *testing.T) {
 			t.Errorf("body changed: %q", body)
 		}
 	})
+
+	t.Run("matches normalized headings", func(t *testing.T) {
+		body, changed := appendToSection("###   Design  \nexisting detail", "## design", "new detail")
+		if changed {
+			t.Fatal("expected normalized heading match to be treated as existing section")
+		}
+		want := "###   Design  \nexisting detail"
+		if body != want {
+			t.Errorf("body = %q, want %q", body, want)
+		}
+	})
 }
 
 func TestValidate(t *testing.T) {
@@ -282,16 +293,24 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("has_checkboxes passes", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "- [ ] task 1", HumanApproval: "backlog"}
+	t.Run("design and acceptance criteria gates pass", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "## Design\n- [x] Approach documented\n- [x] Dependencies and risks identified\n- [x] Human approval requested for backlog\n\n## Acceptance Criteria\n- [ ] task 1", HumanApproval: "backlog"}
 		err := wf.Validate(issue, "backlog", nil)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
-	t.Run("has_checkboxes fails", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "No checkboxes here", HumanApproval: "backlog"}
+	t.Run("design section blocks backlog when unchecked", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "## Design\n- [x] Approach documented\n- [ ] Dependencies and risks identified\n- [x] Human approval requested for backlog\n\n## Acceptance Criteria\n- [ ] task 1", HumanApproval: "backlog"}
+		err := wf.Validate(issue, "backlog", nil)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+
+	t.Run("acceptance criteria section required for backlog", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "## Design\n- [x] Approach documented\n- [x] Dependencies and risks identified\n- [x] Human approval requested for backlog", HumanApproval: "backlog"}
 		err := wf.Validate(issue, "backlog", nil)
 		if err == nil {
 			t.Fatal("expected error")
@@ -330,27 +349,27 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("all_checkboxes_checked passes", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "- [x] done 1\n- [x] done 2"}
+	t.Run("implementation section gate ignores unrelated unchecked items", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "## Acceptance Criteria\n- [ ] still open by design\n\n## Implementation\n- [x] done 1\n- [x] done 2\n\n## Test Plan\n### Automated\nTests\n### Manual\nSteps"}
 		err := wf.Validate(issue, "testing", nil)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
-	t.Run("all_checkboxes_checked fails", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "- [x] done\n- [ ] not done"}
+	t.Run("implementation section gate fails", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "## Implementation\n- [x] done\n- [ ] not done\n\n## Test Plan\n### Automated\nTests\n### Manual\nSteps"}
 		err := wf.Validate(issue, "testing", nil)
 		if err == nil {
 			t.Fatal("expected error")
 		}
 	})
 
-	t.Run("all_checkboxes_checked passes when no checkboxes", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "No checkboxes"}
+	t.Run("testing requires test plan before entering testing", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "## Implementation\n- [x] done"}
 		err := wf.Validate(issue, "testing", nil)
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
+		if err == nil {
+			t.Fatal("expected error")
 		}
 	})
 
@@ -402,8 +421,38 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
+	t.Run("section_has_checkboxes passes", func(t *testing.T) {
+		sectionWf := &WorkflowConfig{
+			Statuses: []WorkflowStatus{
+				{Name: "backlog", Validation: []string{"section_has_checkboxes: Acceptance Criteria"}},
+			},
+		}
+		issue := &Issue{
+			BodyRaw: "## Acceptance Criteria\n- [ ] observable behavior",
+		}
+		err := sectionWf.Validate(issue, "backlog", nil)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("section_has_checkboxes fails", func(t *testing.T) {
+		sectionWf := &WorkflowConfig{
+			Statuses: []WorkflowStatus{
+				{Name: "backlog", Validation: []string{"section_has_checkboxes: Acceptance Criteria"}},
+			},
+		}
+		issue := &Issue{
+			BodyRaw: "## Acceptance Criteria\nNo checklist",
+		}
+		err := sectionWf.Validate(issue, "backlog", nil)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+
 	t.Run("has_test_plan passes for human-testing", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "## Test Plan\n### Automated\nTests\n### Manual\nSteps"}
+		issue := &Issue{BodyRaw: "## Test Plan\n### Automated\nTests\n### Manual\nSteps\n\n## Testing\n- [x] Relevant tests for changed code passing\n- [x] Known unrelated failures documented if full suite is red\n- [x] Test results logged as comment"}
 		comments := []Comment{{Text: "tests: all pass"}}
 		err := wf.Validate(issue, "human-testing", comments)
 		if err != nil {
@@ -412,7 +461,7 @@ func TestValidate(t *testing.T) {
 	})
 
 	t.Run("has_test_plan fails for human-testing", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "No test plan"}
+		issue := &Issue{BodyRaw: "## Testing\n- [x] done"}
 		comments := []Comment{{Text: "tests: all pass"}}
 		err := wf.Validate(issue, "human-testing", comments)
 		if err == nil {
@@ -421,8 +470,17 @@ func TestValidate(t *testing.T) {
 	})
 
 	t.Run("has_comment_prefix tests: fails for human-testing", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "## Test Plan\n### Automated\nTests\n### Manual\nSteps"}
+		issue := &Issue{BodyRaw: "## Test Plan\n### Automated\nTests\n### Manual\nSteps\n\n## Testing\n- [x] Relevant tests for changed code passing\n- [x] Known unrelated failures documented if full suite is red\n- [x] Test results logged as comment"}
 		comments := []Comment{{Text: "some other comment"}}
+		err := wf.Validate(issue, "human-testing", comments)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+	})
+
+	t.Run("testing section must be complete for human-testing", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "## Test Plan\n### Automated\nTests\n### Manual\nSteps\n\n## Testing\n- [x] Relevant tests for changed code passing\n- [ ] Known unrelated failures documented if full suite is red"}
+		comments := []Comment{{Text: "tests: all pass"}}
 		err := wf.Validate(issue, "human-testing", comments)
 		if err == nil {
 			t.Fatal("expected error")
@@ -725,6 +783,52 @@ human_approval: "done"
 
 	if _, err := wf.MarkIssueDoneOnce(fp, "sample"); err == nil {
 		t.Fatal("second done should fail")
+	}
+}
+
+func TestStartIssueOnceMissingApprovalDoesNotClaimIssue(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "issue.md")
+	content := `---
+title: "Sample"
+status: "backlog"
+---
+
+## Acceptance Criteria
+- [ ] ship it
+`
+	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
+		t.Fatalf("write issue: %v", err)
+	}
+
+	wf := DefaultWorkflow()
+	if _, err := wf.StartIssueOnce(fp, "sample", "alice"); err == nil {
+		t.Fatal("expected missing approval to fail")
+	} else {
+		if !strings.Contains(err.Error(), `human approval for "in progress" is missing`) {
+			t.Fatalf("error = %q, want approval-specific failure", err)
+		}
+		if !strings.Contains(err.Error(), "no changes were made") {
+			t.Fatalf("error = %q, want explicit no-mutation guidance", err)
+		}
+	}
+
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		t.Fatalf("read issue: %v", err)
+	}
+	issue, err := ParseIssue(filepath.Base(fp), data)
+	if err != nil {
+		t.Fatalf("parse issue: %v", err)
+	}
+	if issue.Assignee != "" {
+		t.Fatalf("issue assignee = %q, want empty", issue.Assignee)
+	}
+	if issue.StartedAt != "" {
+		t.Fatalf("issue started_at = %q, want empty", issue.StartedAt)
+	}
+	if issue.Status != "backlog" {
+		t.Fatalf("issue status = %q, want backlog", issue.Status)
 	}
 }
 

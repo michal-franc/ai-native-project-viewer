@@ -142,14 +142,16 @@ func DefaultWorkflow() *WorkflowConfig {
 				Actions: []WorkflowAction{
 					{Type: "validate", Rule: "body_not_empty"},
 					{Type: "append_section", Title: "Idea", Body: "- [ ] Problem described clearly\n- [ ] Scope defined\n- [ ] Constraints and open questions captured"},
-					{Type: "append_section", Title: "Design", Body: "- [ ] Acceptance criteria defined as checkboxes\n- [ ] Approach documented\n- [ ] Open questions called out explicitly"},
+					{Type: "append_section", Title: "Design", Body: "- [ ] Approach documented\n- [ ] Dependencies and risks identified\n- [ ] Human approval requested for backlog"},
+					{Type: "append_section", Title: "Acceptance Criteria", Body: "- [ ] First observable requirement\n- [ ] Second observable requirement"},
 				},
 			},
 			{
 				From: "in design",
 				To:   "backlog",
 				Actions: []WorkflowAction{
-					{Type: "validate", Rule: "has_checkboxes"},
+					{Type: "validate", Rule: "section_checkboxes_checked: Design"},
+					{Type: "validate", Rule: "section_has_checkboxes: Acceptance Criteria"},
 					{Type: "require_human_approval", Status: "backlog"},
 					{Type: "set_fields", Field: "assignee", Value: ""},
 				},
@@ -160,16 +162,17 @@ func DefaultWorkflow() *WorkflowConfig {
 				Actions: []WorkflowAction{
 					{Type: "require_human_approval", Status: "in progress"},
 					{Type: "validate", Rule: "has_assignee"},
-					{Type: "append_section", Title: "Implementation", Body: "- [ ] Code changes complete\n- [ ] Tests added or updated"},
+					{Type: "append_section", Title: "Implementation", Body: "- [ ] Code changes complete\n- [ ] Automated tests added or updated where practical\n- [ ] Cross-cutting impact reviewed where relevant"},
 					{Type: "append_section", Title: "Test Plan", Body: "### Automated\n- [ ] Automated verification recorded\n\n### Manual\n- [ ] Manual verification steps listed if needed"},
-					{Type: "inject_prompt", Prompt: "Implement the issue, update the Implementation section as work progresses, and keep the test plan concrete."},
+					{Type: "inject_prompt", Prompt: "Implement the issue, update the Implementation section as work progresses, and keep the test plan concrete.\nCall out cross-cutting impact early if the change affects shared state, shared config, or behavior outside the immediate subsystem."},
 				},
 			},
 			{
 				From: "in progress",
 				To:   "testing",
 				Actions: []WorkflowAction{
-					{Type: "validate", Rule: "all_checkboxes_checked"},
+					{Type: "validate", Rule: "section_checkboxes_checked: Implementation"},
+					{Type: "validate", Rule: "has_test_plan"},
 					{Type: "append_section", Title: "Testing", Body: "- [ ] Relevant tests for changed code passing\n- [ ] Known unrelated failures documented if full suite is red\n- [ ] Test results logged with `issue-cli comment <slug> --text \"tests: ...\"`"},
 					{Type: "inject_prompt", Prompt: "Verify the implementation, run the relevant tests for the changed code, and record the results in a `tests:` comment before continuing. If unrelated failures block the full suite, document them explicitly."},
 				},
@@ -179,6 +182,7 @@ func DefaultWorkflow() *WorkflowConfig {
 				To:   "human-testing",
 				Actions: []WorkflowAction{
 					{Type: "validate", Rule: "has_test_plan"},
+					{Type: "validate", Rule: "section_checkboxes_checked: Testing"},
 					{Type: "validate", Rule: "has_comment_prefix: tests:"},
 					{Type: "append_section", Title: "Human Testing", Body: "- [ ] Manual verification completed by a human if required"},
 				},
@@ -195,6 +199,7 @@ func DefaultWorkflow() *WorkflowConfig {
 				From: "documentation",
 				To:   "done",
 				Actions: []WorkflowAction{
+					{Type: "validate", Rule: "section_checkboxes_checked: Documentation"},
 					{Type: "validate", Rule: "has_comment_prefix: docs:"},
 					{Type: "require_human_approval", Status: "done"},
 				},
@@ -464,6 +469,104 @@ func normalizeHeading(title string) string {
 	return "## " + title
 }
 
+type headingMatch struct {
+	StartLine int
+	EndLine   int
+	Level     int
+	Line      string
+	Key       string
+}
+
+func parseHeadingLine(line string) (level int, title string, ok bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || !strings.HasPrefix(trimmed, "#") {
+		return 0, "", false
+	}
+	i := 0
+	for i < len(trimmed) && trimmed[i] == '#' {
+		i++
+	}
+	if i == 0 || i > 6 || i >= len(trimmed) || trimmed[i] != ' ' {
+		return 0, "", false
+	}
+	title = strings.TrimSpace(trimmed[i+1:])
+	title = strings.TrimSpace(strings.TrimRight(title, "#"))
+	if title == "" {
+		return 0, "", false
+	}
+	return i, title, true
+}
+
+func normalizeHeadingKey(title string) string {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return ""
+	}
+	if _, parsed, ok := parseHeadingLine(title); ok {
+		title = parsed
+	}
+	return strings.ToLower(strings.Join(strings.Fields(title), " "))
+}
+
+func findHeadingMatches(body, title string) []headingMatch {
+	lines := strings.Split(body, "\n")
+	key := normalizeHeadingKey(title)
+	if key == "" {
+		return nil
+	}
+
+	var matches []headingMatch
+	for i, line := range lines {
+		level, parsedTitle, ok := parseHeadingLine(line)
+		if !ok || normalizeHeadingKey(parsedTitle) != key {
+			continue
+		}
+
+		end := len(lines)
+		for j := i + 1; j < len(lines); j++ {
+			nextLevel, _, ok := parseHeadingLine(lines[j])
+			if ok && nextLevel <= level {
+				end = j
+				break
+			}
+		}
+
+		matches = append(matches, headingMatch{
+			StartLine: i,
+			EndLine:   end,
+			Level:     level,
+			Line:      strings.TrimSpace(line),
+			Key:       key,
+		})
+	}
+	return matches
+}
+
+func appendContentToMatch(body string, match headingMatch, content string) (string, bool) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return body, false
+	}
+
+	lines := strings.Split(body, "\n")
+	sectionLines := append([]string(nil), lines[match.StartLine:match.EndLine]...)
+	sectionBody := strings.TrimSpace(strings.Join(sectionLines[1:], "\n"))
+	if sectionBody != "" {
+		if strings.Contains(sectionBody, content) {
+			return body, false
+		}
+		sectionBody = strings.TrimRight(sectionBody, "\n") + "\n\n" + content
+	} else {
+		sectionBody = content
+	}
+
+	replacement := []string{strings.TrimRight(sectionLines[0], "\n"), sectionBody}
+	newLines := append([]string(nil), lines[:match.StartLine]...)
+	newLines = append(newLines, replacement...)
+	newLines = append(newLines, lines[match.EndLine:]...)
+	return strings.TrimRight(strings.Join(newLines, "\n"), "\n") + "\n", true
+}
+
 func appendToSection(body, title, content string) (string, bool) {
 	heading := normalizeHeading(title)
 	content = strings.TrimSpace(content)
@@ -471,25 +574,18 @@ func appendToSection(body, title, content string) (string, bool) {
 		return body, false
 	}
 
-	lines := strings.Split(body, "\n")
-	headingLine := strings.TrimSpace(heading)
-	start := -1
-	for i, line := range lines {
-		if strings.TrimSpace(line) == headingLine {
-			start = i
-			break
+	matches := findHeadingMatches(body, title)
+	switch len(matches) {
+	case 0:
+		body = strings.TrimRight(body, "\n")
+		if body != "" {
+			body += "\n\n"
 		}
-	}
-	if start != -1 {
+		body += heading + "\n" + content + "\n"
+		return body, true
+	default:
 		return body, false
 	}
-
-	body = strings.TrimRight(body, "\n")
-	if body != "" {
-		body += "\n\n"
-	}
-	body += heading + "\n" + content + "\n"
-	return body, true
 }
 
 // ValidateTransition checks whether an issue meets all validation rules for a transition.
@@ -633,6 +729,11 @@ func validationSummary(rule string) string {
 		return "Validate issue body is not empty"
 	case "has_checkboxes":
 		return "Validate issue has checkboxes"
+	case "section_has_checkboxes":
+		if arg == "" {
+			return "Validate section has checkboxes"
+		}
+		return fmt.Sprintf("Validate section %s has checkboxes", arg)
 	case "has_assignee":
 		return "Validate issue has assignee"
 	case "all_checkboxes_checked":
@@ -677,6 +778,14 @@ func (w *WorkflowConfig) checkRule(rule string, issue *Issue, comments []Comment
 		total, _ := CountCheckboxes(issue.BodyRaw)
 		if total == 0 {
 			return fmt.Errorf("no checkboxes found — add acceptance criteria as checkboxes:\n\n  - [ ] First requirement\n  - [ ] Second requirement")
+		}
+	case "section_has_checkboxes":
+		if ruleArg == "" {
+			return fmt.Errorf("section_has_checkboxes rule requires a section name argument")
+		}
+		total, _ := CountCheckboxesInSection(issue.BodyRaw, ruleArg)
+		if total == 0 {
+			return fmt.Errorf("no checkboxes found in section %q — add explicit checklist items there", ruleArg)
 		}
 	case "has_assignee":
 		if issue.Assignee == "" {
@@ -853,13 +962,22 @@ func (w *WorkflowConfig) StartIssueOnce(filePath, slug, assignee string) (*Start
 		}
 		_, comments := ParseComments(rawBody)
 
+		candidate := *issue
+		if candidate.Assignee == "" {
+			candidate.Assignee = assignee
+		}
+
+		if err := w.ValidateTransition(&candidate, "backlog", "in progress", comments); err != nil {
+			if required := w.RequiredHumanApproval("backlog", "in progress"); required != "" && !strings.EqualFold(issue.HumanApproval, required) {
+				return fmt.Errorf("cannot start %s: human approval for %q is missing; no changes were made", slug, required)
+			}
+			return err
+		}
+
 		claimed := false
 		if issue.Assignee == "" {
 			issue.Assignee = assignee
 			claimed = true
-		}
-		if err := w.ValidateTransition(issue, "backlog", "in progress", comments); err != nil {
-			return err
 		}
 
 		result := w.ApplyTransition(issue, "backlog", "in progress")
