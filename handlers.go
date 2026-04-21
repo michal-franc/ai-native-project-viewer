@@ -1807,10 +1807,7 @@ func (s *Server) handleApproveIssue(w http.ResponseWriter, r *http.Request, proj
 			resp.NotificationError = "no active agent session matched this issue"
 		} else {
 			target := activeSessions[0].Name
-			messageLines := []string{
-					fmt.Sprintf("human_approval:%s", body.Status),
-					fmt.Sprintf("approval_label:%s", approvalLabel(body.Status)),
-				}
+			messageLines := []string{humanApprovalMessage(body.Status)}
 			if err := tmuxSendKeys(target, messageLines); err != nil {
 				resp.NotificationError = err.Error()
 			} else {
