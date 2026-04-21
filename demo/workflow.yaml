@@ -42,6 +42,29 @@ statuses:
   - name: "done"
     description: "Completed"
 
+  - name: "waiting-for-team-input"
+    description: "Parked — blocked on another team; returns to in progress when unblocked"
+    prompt: |
+      Do not run code changes while in this status.
+      When the blocking team responds, transition back to `in progress` and resume work.
+
+board:
+  columns:
+    - idea
+    - in design
+    - backlog
+    - in progress
+    - waiting-for-team-input
+    - testing
+    - human-testing
+    - documentation
+    - done
+  card_fields:
+    - system
+    - labels
+    - assignee
+    - waiting
+
 transitions:
   - from: "idea"
     to: "in design"
@@ -142,6 +165,20 @@ transitions:
         rule: "has_comment_prefix: docs:"
       - type: "require_human_approval"
         status: "done"
+
+  - from: "in progress"
+    to: "waiting-for-team-input"
+    actions:
+      - type: "inject_prompt"
+        prompt: |
+          Set the `waiting` frontmatter field on the issue to name the team you're blocked on, and summarise the open question in a comment before stepping away.
+
+  - from: "waiting-for-team-input"
+    to: "in progress"
+    actions:
+      - type: "inject_prompt"
+        prompt: |
+          Confirm the blocker is resolved, clear the `waiting` frontmatter field, and resume implementation.
 
 systems:
   Combat:

@@ -1693,3 +1693,60 @@ func TestFilterIssues(t *testing.T) {
 		})
 	}
 }
+
+func TestBoardCardFields_RendersExtraFields(t *testing.T) {
+	fn, ok := funcMap["boardCardFields"].(func([]string, *IssueView) []BoardCardField)
+	if !ok {
+		t.Fatal("boardCardFields funcMap entry has unexpected signature")
+	}
+
+	issue := &IssueView{
+		Issue: &tracker.Issue{
+			System: "Repayments",
+			ExtraFields: []tracker.ExtraField{
+				{Key: "waiting", Value: "team-input"},
+				{Key: "team", Value: "payments"},
+				{Key: "participants", IsList: true, Values: []string{"alice", "bob"}},
+				{Key: "empty", Value: ""},
+			},
+		},
+	}
+
+	fields := []string{"system", "waiting", "team", "participants", "empty", "unknown"}
+	got := fn(fields, issue)
+
+	byName := map[string]BoardCardField{}
+	for _, f := range got {
+		byName[f.Name] = f
+	}
+
+	if byName["system"].Value != "Repayments" {
+		t.Errorf("system value = %q, want %q", byName["system"].Value, "Repayments")
+	}
+	if byName["waiting"].Value != "team-input" {
+		t.Errorf("waiting value = %q, want %q", byName["waiting"].Value, "team-input")
+	}
+	if byName["team"].Value != "payments" {
+		t.Errorf("team value = %q, want %q", byName["team"].Value, "payments")
+	}
+	p, ok := byName["participants"]
+	if !ok {
+		t.Fatal("participants field missing from result")
+	}
+	if !p.IsList || len(p.Values) != 2 || p.Values[0] != "alice" || p.Values[1] != "bob" {
+		t.Errorf("participants field = %+v, want list [alice bob]", p)
+	}
+	if _, ok := byName["empty"]; ok {
+		t.Errorf("empty extra field should be omitted, got %+v", byName["empty"])
+	}
+	if _, ok := byName["unknown"]; ok {
+		t.Errorf("unknown field with no extra match should be omitted")
+	}
+
+	if len(got) < 3 {
+		t.Fatalf("result length = %d, want at least 3", len(got))
+	}
+	if got[0].Name != "system" || got[1].Name != "waiting" || got[2].Name != "team" {
+		t.Errorf("ordering not preserved: got %q, %q, %q", got[0].Name, got[1].Name, got[2].Name)
+	}
+}
