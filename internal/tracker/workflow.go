@@ -312,6 +312,9 @@ func (w *WorkflowConfig) IsValidTransition(from, to string) bool {
 	if fi == -1 || ti == -1 {
 		return false
 	}
+	if w.GetTransition(from, to) != nil {
+		return true
+	}
 	return ti == fi+1
 }
 

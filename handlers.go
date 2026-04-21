@@ -146,6 +146,20 @@ var funcMap = template.FuncMap{
 				if issue.Number > 0 {
 					result = append(result, BoardCardField{Name: f, Value: fmt.Sprintf("#%d", issue.Number)})
 				}
+			default:
+				for _, ef := range issue.ExtraFields {
+					if ef.Key != f {
+						continue
+					}
+					if ef.IsList {
+						if len(ef.Values) > 0 {
+							result = append(result, BoardCardField{Name: f, Values: ef.Values, IsList: true})
+						}
+					} else if ef.Value != "" {
+						result = append(result, BoardCardField{Name: f, Value: ef.Value})
+					}
+					break
+				}
 			}
 		}
 		return result

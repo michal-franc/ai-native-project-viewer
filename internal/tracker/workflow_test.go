@@ -95,6 +95,54 @@ func TestIsValidTransition(t *testing.T) {
 	}
 }
 
+func TestIsValidTransition_HonorsYAMLBackwardEdge(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "in-review"},
+			{Name: "waiting-for-team-input"},
+			{Name: "approved"},
+		},
+		Transitions: []WorkflowTransition{
+			{From: "in-review", To: "waiting-for-team-input"},
+			{From: "waiting-for-team-input", To: "in-review"},
+			{From: "in-review", To: "approved"},
+		},
+	}
+
+	if !wf.IsValidTransition("waiting-for-team-input", "in-review") {
+		t.Errorf("backward edge declared in YAML should be valid")
+	}
+	if !wf.IsValidTransition("in-review", "waiting-for-team-input") {
+		t.Errorf("forward edge declared in YAML should be valid")
+	}
+	if !wf.IsValidTransition("in-review", "approved") {
+		t.Errorf("index-skipping forward edge declared in YAML should be valid")
+	}
+	if wf.IsValidTransition("approved", "in-review") {
+		t.Errorf("undeclared backward edge should remain invalid")
+	}
+}
+
+func TestIsValidTransition_FallsBackToLinearWhenNoExplicitEdge(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "a"},
+			{Name: "b"},
+			{Name: "c"},
+		},
+	}
+
+	if !wf.IsValidTransition("a", "b") {
+		t.Errorf("adjacent transition should be valid via linear fallback")
+	}
+	if wf.IsValidTransition("a", "c") {
+		t.Errorf("skip transition should be invalid without explicit edge")
+	}
+	if wf.IsValidTransition("b", "a") {
+		t.Errorf("backward transition should be invalid without explicit edge")
+	}
+}
+
 func TestGetStatusDescriptions(t *testing.T) {
 	wf := DefaultWorkflow()
 	descs := wf.GetStatusDescriptions()

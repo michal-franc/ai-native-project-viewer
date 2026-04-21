@@ -98,92 +98,24 @@ Page content in markdown.
 - `order` — numeric sort order (lower first), pages with same order sort alphabetically
 - Frontmatter is optional; a plain markdown file works too
 
-## Syncing from GitHub Projects
+## Documentation
 
-```bash
-./sync-issues.sh [output-dir]
-```
+Detailed documentation lives in `docs/` and is viewable at `/docs` in the web UI:
 
-Downloads all items from `github.com/users/michal-franc/projects/4` and writes them as markdown files to `./issues/<System>/`. Cleans the output directory before writing.
+- [Getting Started](docs/getting-started.md) — installation and first issue
+- [Issue File Format](docs/issue-format.md) — frontmatter fields, custom fields, file organization
+- [Workflow](docs/workflow.md) — lifecycle, prompts, side-effects, system overlays
+- [Agent Workflow Flow](docs/agent-workflow-flow.md) — full dispatch-to-done agent flow
+- [Board Configuration](docs/board-configuration.md) — columns, card fields
+- [Agent Dispatch](docs/agent-dispatch.md) — terminal config, approval notifications
+- [GitHub Integration](docs/github-integration.md) — sync, issue reference, auto-close
 
-## Views
+Per-system docs:
 
-- `/` — filterable issue list (status, system, priority, label, search)
-- `/board` — kanban board with status columns, version filter
-- `/graph` — workflow status graph: all issues positioned on their current status node in the workflow DAG. Stale issues highlighted (yellow 7d+, red 14d+). Statuses requiring human approval marked with 🔒. Filterable by system; done hidden by default.
-- `/docs` — documentation pages with sidebar navigation
-- `/issue/<slug>` — issue detail with sidebar metadata
-
-## Agent Dispatch
-
-The board and detail views can dispatch issues to AI agents (Claude or Codex) via tmux sessions:
-
-- **Board view** — hover a card, click the play button, pick Claude or Codex
-- **Detail view** — two buttons in the sidebar (Claude / Codex)
-- **Backend** — `POST /p/<project>/issue/<slug>/dispatch` with `{"agent": "claude"}` or `{"agent": "codex"}`
-- The handler creates a tmux session, opens a terminal (configurable via `terminal` in `projects.yaml`), starts the selected agent, and pastes the generated prompt
-- `terminal` supports `{{session}}` substitution and runs via `sh -c`; set to `none` for headless (returns `attach_cmd` in response); defaults to i3+alacritty if unset
-
-## Workflow Side-Effects
-
-`WorkflowStatus` supports a `side_effects` field — actions that run automatically after a transition:
-
-- `clear_assignee` — clears the assignee field (used on `backlog` so design agents are unassigned before implementation)
-
-Side-effects are declarative in `workflow.yaml` or the default config:
-
-```yaml
-- name: backlog
-  validation: [has_checkboxes]
-  side_effects: [clear_assignee]
-```
-
-## Board Configuration
-
-The `board` section in `workflow.yaml` controls the kanban layout.
-
-### Columns (swimlanes)
-
-`board.columns` sets which statuses appear as columns and in what order. Only listed statuses are shown — unlisted ones are hidden even if issues carry that status:
-
-```yaml
-board:
-  columns:
-    - backlog
-    - in progress
-    - testing
-    - done
-```
-
-If omitted, all statuses defined in `statuses:` are shown in their declared order.
-
-### Card fields
-
-`board.card_fields` sets which issue fields appear on each card and in what order:
-
-```yaml
-board:
-  card_fields:
-    - system
-    - labels
-    - priority
-    - assignee
-```
-
-Supported field names: `system`, `labels`, `priority`, `assignee`, `version`, `number`.
-
-If omitted, defaults to `[system, labels]`.
-
-## GitHub Issue Reference
-
-Issues can link back to a GitHub issue via `number` and `repo` frontmatter fields:
-
-```yaml
-number: 42
-repo: "owner/repo"
-```
-
-When both are set, the detail view sidebar shows a clickable link to `https://github.com/owner/repo/issues/42`. When the issue is marked `done`, the GitHub issue is automatically closed with a comment.
+- [API](docs/API/overview.md) — endpoints, handlers, server logic
+- [CLI](docs/CLI/overview.md) — issue-cli commands, output contracts
+- [UI](docs/UI/overview.md) — templates, views, client-side behavior
+- [Workflow](docs/Workflow/overview.md) — workflow engine, transitions, overlays
 
 ## Adding New Statuses
 

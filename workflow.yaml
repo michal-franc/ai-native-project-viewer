@@ -170,6 +170,10 @@ systems:
           Write the design into the issue body under the relevant sections before checking the related boxes.
           For API changes that affect UI-visible state, state the source of truth, whether server-side polling plus `/hash` is the expected refresh path, and whether manual browser verification is required before human-testing.
           When the design is complete, stop and ask for backlog approval in the issue viewer before attempting the transition.
+      - name: "documentation"
+        prompt: |
+          Update docs/API/ with any changed endpoints, request/response formats, or behavior.
+          Reference docs/API/overview.md for the current API documentation structure.
     transitions:
       []
   CLI:
@@ -181,6 +185,10 @@ systems:
           Write the design into the issue body under the relevant sections before checking the related boxes.
           Document the output contract early: whether text is human-facing or agent-facing, whether script compatibility matters, and whether `--json` or other machine-readable output is in scope for this issue.
           When the design is complete, stop and ask for backlog approval in the issue viewer before attempting the transition.
+      - name: "documentation"
+        prompt: |
+          Update docs/CLI/ with any changed commands, flags, or output formats.
+          Reference docs/CLI/overview.md for the current CLI documentation structure.
     transitions:
       []
   UI:
@@ -192,6 +200,10 @@ systems:
           Write the design into the issue body under the relevant sections before checking the related boxes.
           For UI work that launches local tools or editors, state whether to reuse existing tmux/alacritty patterns, whether handlers may block on local processes, and what feedback the user sees after launch.
           When the design is complete, stop and ask for backlog approval in the issue viewer before attempting the transition.
+      - name: "documentation"
+        prompt: |
+          Update docs/UI/ with any changed views, templates, or interaction patterns.
+          Reference docs/UI/overview.md for the current UI documentation structure.
     transitions:
       []
   Workflow:
@@ -202,5 +214,9 @@ systems:
           State which statuses, rules, templates, or overlays will change, and whether existing issues need migration or compatibility handling.
           Write the design into the issue body under the relevant sections before checking the related boxes.
           When the design is complete, stop and ask for backlog approval in the issue viewer before attempting the transition.
+      - name: "documentation"
+        prompt: |
+          Update docs/Workflow/ with any changed statuses, transitions, actions, or overlay behavior.
+          Reference docs/Workflow/overview.md for the current workflow documentation structure.
     transitions:
       []
