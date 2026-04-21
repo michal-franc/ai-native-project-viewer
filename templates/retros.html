@@ -386,7 +386,7 @@
         </section>
     </div>
     <script>
-    var prefix = {{printf "%q" .Prefix}};
+    var prefix = "{{.Prefix}}";
 
     function launchRetrosReview() {
         var agent = document.getElementById('review-agent').value;
