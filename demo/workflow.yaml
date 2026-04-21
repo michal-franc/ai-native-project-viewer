@@ -23,6 +23,13 @@ statuses:
     prompt: |
       Implement the accepted design and keep the issue body, implementation checklist, and test plan accurate as work progresses.
 
+  - name: "waiting-for-team-input"
+    optional: true
+    description: "Parked — blocked on another team (optional, skip if not blocked)"
+    prompt: |
+      Do not run code changes while in this status.
+      When the blocking team responds, transition back to `in progress` or forward to `testing`.
+
   - name: "testing"
     description: "Under verification"
     prompt: |
@@ -47,12 +54,6 @@ statuses:
 
   - name: "done"
     description: "Completed"
-
-  - name: "waiting-for-team-input"
-    description: "Parked — blocked on another team; returns to in progress when unblocked"
-    prompt: |
-      Do not run code changes while in this status.
-      When the blocking team responds, transition back to `in progress` and resume work.
 
 board:
   columns:

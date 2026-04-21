@@ -97,12 +97,13 @@
     <div class="board-container">
         <div class="board">
             {{range .Columns}}
-            <div class="board-column" data-status="{{.Status}}">
+            <div class="board-column{{if .Optional}} board-column-optional{{end}}" data-status="{{.Status}}">
                 <div class="board-column-header" onclick="toggleColumn(this)">
                     <div class="board-column-header-top">
                         <svg class="board-column-chevron" width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M4 2l4 4-4 4"/></svg>
                         <span class="board-column-dot" style="border-color:{{statusColor .Status}}"></span>
                         <span class="board-column-title">{{.Status}}</span>
+                        {{if .Optional}}<span class="board-column-optional-badge" title="Optional status — forward transitions may skip this column">optional</span>{{end}}
                         <span class="board-column-count">{{len .Issues}}</span>
                         <button class="board-column-add" title="Add issue" onclick="event.stopPropagation(); openCreateModal('{{.Status}}')">
                             <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M7.25 1a.75.75 0 01.75.75V7h5.25a.75.75 0 010 1.5H8v5.25a.75.75 0 01-1.5 0V8.5H1.25a.75.75 0 010-1.5H6.5V1.75A.75.75 0 017.25 1z"/></svg>

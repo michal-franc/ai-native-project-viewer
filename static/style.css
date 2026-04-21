@@ -733,6 +733,23 @@ a:hover { text-decoration: underline; }
     font-size: 14px;
 }
 
+.board-column-optional-badge {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 6px;
+    border: 1px dashed var(--text-secondary);
+    border-radius: 10px;
+    color: var(--text-secondary);
+    background: transparent;
+}
+
+.board-column-optional .board-column-title {
+    font-style: italic;
+    opacity: 0.85;
+}
+
 .board-column-desc {
     font-size: 12px;
     color: var(--text-secondary);

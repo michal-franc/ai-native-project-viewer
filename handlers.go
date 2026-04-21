@@ -590,6 +590,7 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *trac
 type BoardColumn struct {
 	Status      string
 	Description string
+	Optional    bool
 	Issues      []*IssueView
 }
 
@@ -641,6 +642,7 @@ type GraphStatusNode struct {
 	Name            string
 	Description     string
 	RequireApproval bool
+	Optional        bool
 	Issues          []*GraphIssueNode
 }
 
@@ -808,7 +810,11 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *track
 	added := map[string]bool{}
 	for _, st := range statusOrder {
 		desc := statusDescs[st]
-		columns = append(columns, &BoardColumn{Status: st, Description: desc, Issues: byStatus[st]})
+		optional := false
+		if ws := wf.GetStatus(st); ws != nil {
+			optional = ws.Optional
+		}
+		columns = append(columns, &BoardColumn{Status: st, Description: desc, Optional: optional, Issues: byStatus[st]})
 		added[st] = true
 	}
 	for st := range seen {
@@ -885,10 +891,15 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request, proj *track
 
 	nodeMap := map[string]*GraphStatusNode{}
 	for _, name := range statusOrder {
+		optional := false
+		if s := wf.GetStatus(name); s != nil {
+			optional = s.Optional
+		}
 		nodeMap[name] = &GraphStatusNode{
 			Name:            name,
 			Description:     statusDescs[name],
 			RequireApproval: approvalRequired[name],
+			Optional:        optional,
 		}
 	}
 

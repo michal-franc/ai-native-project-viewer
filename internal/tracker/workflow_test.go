@@ -126,6 +126,113 @@ func TestIsValidTransition_HonorsYAMLBackwardEdge(t *testing.T) {
 	}
 }
 
+func TestIsValidTransition_SkipsOptionalStatuses(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "in-review"},
+			{Name: "waiting-for-team-input", Optional: true},
+			{Name: "approve-comment-created"},
+			{Name: "approved"},
+		},
+	}
+
+	if !wf.IsValidTransition("in-review", "approve-comment-created") {
+		t.Errorf("forward jump across an optional status should be valid")
+	}
+	if !wf.IsValidTransition("in-review", "waiting-for-team-input") {
+		t.Errorf("forward step into an optional status should still be valid")
+	}
+	if !wf.IsValidTransition("waiting-for-team-input", "approve-comment-created") {
+		t.Errorf("stepping out of an optional status should be valid")
+	}
+	if wf.IsValidTransition("in-review", "approved") {
+		t.Errorf("skipping a required status must not be allowed")
+	}
+}
+
+func TestIsValidTransition_MultipleOptionalInARow(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "a"},
+			{Name: "b", Optional: true},
+			{Name: "c", Optional: true},
+			{Name: "d"},
+		},
+	}
+	if !wf.IsValidTransition("a", "d") {
+		t.Errorf("jumping across two consecutive optional statuses should be valid")
+	}
+}
+
+func TestNextRequiredStatus(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "a"},
+			{Name: "b", Optional: true},
+			{Name: "c", Optional: true},
+			{Name: "d"},
+		},
+	}
+
+	if got := wf.NextRequiredStatus("a"); got != "d" {
+		t.Errorf("NextRequiredStatus(a) = %q, want d", got)
+	}
+	if got := wf.NextRequiredStatus("b"); got != "d" {
+		t.Errorf("NextRequiredStatus(b) = %q, want d", got)
+	}
+	if got := wf.NextRequiredStatus("d"); got != "" {
+		t.Errorf("NextRequiredStatus(d) = %q, want empty", got)
+	}
+	if got := wf.NextRequiredStatus("unknown"); got != "" {
+		t.Errorf("NextRequiredStatus(unknown) = %q, want empty", got)
+	}
+}
+
+func TestApplyTransitionToFile_ErrorPointsAtRequiredNext(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "1.md")
+	body := "---\ntitle: \"Test\"\nstatus: \"a\"\n---\n\nbody\n"
+	if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "a"},
+			{Name: "b", Optional: true},
+			{Name: "c"},
+			{Name: "d"},
+		},
+	}
+
+	// Try to jump from a directly to d — c is required and cannot be skipped.
+	_, _, err := wf.ApplyTransitionToFile(path, "d")
+	if err == nil {
+		t.Fatal("expected error when skipping a required status")
+	}
+	if !strings.Contains(err.Error(), "\"c\"") {
+		t.Errorf("error should mention required next status %q, got: %v", "c", err)
+	}
+}
+
+func TestMerge_PropagatesOptional(t *testing.T) {
+	base := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "a"},
+			{Name: "b"},
+		},
+	}
+	overlay := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "b", Optional: true},
+		},
+	}
+	base.Merge(overlay)
+	if got := base.GetStatus("b"); got == nil || !got.Optional {
+		t.Errorf("merged status b should be Optional=true, got %+v", got)
+	}
+}
+
 func TestIsValidTransition_FallsBackToLinearWhenNoExplicitEdge(t *testing.T) {
 	wf := &WorkflowConfig{
 		Statuses: []WorkflowStatus{

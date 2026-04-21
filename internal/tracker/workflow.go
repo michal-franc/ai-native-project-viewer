@@ -17,6 +17,9 @@ type WorkflowStatus struct {
 	Template    string   `yaml:"template"`
 	Validation  []string `yaml:"validation"`
 	SideEffects []string `yaml:"side_effects"`
+	// Optional marks the status as skippable on forward transitions. A transition
+	// from A to C is valid if every status strictly between them is Optional.
+	Optional bool `yaml:"optional,omitempty"`
 }
 
 type WorkflowAction struct {
@@ -328,7 +331,16 @@ func (w *WorkflowConfig) IsValidTransition(from, to string) bool {
 	if w.GetTransition(from, to) != nil {
 		return true
 	}
-	return ti == fi+1
+	if ti <= fi {
+		return false
+	}
+	// Forward jumps are valid when every strictly-intermediate status is optional.
+	for i := fi + 1; i < ti; i++ {
+		if !w.Statuses[i].Optional {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *WorkflowConfig) GetStatus(name string) *WorkflowStatus {
@@ -946,7 +958,10 @@ func (w *WorkflowConfig) ApplyTransitionToFile(filePath, toStatus string) (strin
 
 		fromStatus = issue.Status
 		if !w.IsValidTransition(fromStatus, toStatus) {
-			next := w.NextStatus(fromStatus)
+			next := w.NextRequiredStatus(fromStatus)
+			if next == "" {
+				next = w.NextStatus(fromStatus)
+			}
 			if next != "" {
 				return fmt.Errorf("cannot transition from %q to %q — must go to %q next", fromStatus, toStatus, next)
 			}
@@ -1170,6 +1185,9 @@ func (w *WorkflowConfig) Merge(custom *WorkflowConfig) {
 		if cs.Template != "" {
 			base.Template = cs.Template
 		}
+		if cs.Optional {
+			base.Optional = true
+		}
 		base.Validation = appendUnique(base.Validation, cs.Validation)
 		base.SideEffects = appendUnique(base.SideEffects, cs.SideEffects)
 	}
@@ -1257,4 +1275,19 @@ func (w *WorkflowConfig) NextStatus(current string) string {
 		return ""
 	}
 	return w.Statuses[idx+1].Name
+}
+
+// NextRequiredStatus returns the next non-optional status following current, or empty string.
+// Used for error messages so the "must go to X next" hint points at a status the caller actually has to pass through.
+func (w *WorkflowConfig) NextRequiredStatus(current string) string {
+	idx := w.GetStatusIndex(current)
+	if idx == -1 {
+		return ""
+	}
+	for i := idx + 1; i < len(w.Statuses); i++ {
+		if !w.Statuses[i].Optional {
+			return w.Statuses[i].Name
+		}
+	}
+	return ""
 }

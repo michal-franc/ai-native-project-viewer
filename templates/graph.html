@@ -119,6 +119,28 @@
             color: var(--text-secondary);
             cursor: default;
         }
+        .graph-status-node-optional {
+            border-style: dashed;
+            opacity: 0.85;
+        }
+        .graph-status-optional-tag {
+            font-size: 9px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-secondary);
+            border: 1px dashed var(--text-secondary);
+            border-radius: 8px;
+            padding: 1px 5px;
+            margin-left: 4px;
+        }
+        .graph-optional-swatch {
+            display: inline-block;
+            width: 18px;
+            height: 0;
+            border-top: 1.5px dashed #4b5563;
+            vertical-align: middle;
+        }
         .graph-desc {
             font-size: 10px;
             color: var(--text-secondary);
@@ -300,23 +322,31 @@
             <span style="font-size:12px;">🔒</span>
             requires human approval to enter
         </div>
+        <div class="graph-legend-item">
+            <span class="graph-optional-swatch"></span>
+            optional — forward transitions may skip this status
+        </div>
     </div>
 
     <div class="graph-outer">
         <div class="graph-track">
             {{range $i, $node := .StatusNodes}}
             {{if $i}}
-            <div class="graph-connector">
+            <div class="graph-connector{{if .Optional}} graph-connector-skip{{end}}" title="{{if .Optional}}Optional — forward transitions may skip this status{{end}}">
                 <svg width="32" height="24" viewBox="0 0 32 24">
+                    {{if .Optional}}
+                    <line x1="0" y1="12" x2="26" y2="12" stroke="#4b5563" stroke-width="1.5" stroke-dasharray="4 3"/>
+                    {{else}}
                     <line x1="0" y1="12" x2="26" y2="12" stroke="#4b5563" stroke-width="1.5"/>
+                    {{end}}
                     <polygon points="22,7 32,12 22,17" fill="#4b5563"/>
                 </svg>
             </div>
             {{end}}
-            <div class="graph-column">
-                <div class="graph-status-node">
+            <div class="graph-column{{if .Optional}} graph-column-optional{{end}}">
+                <div class="graph-status-node{{if .Optional}} graph-status-node-optional{{end}}">
                     <div class="graph-status-top" style="background:{{statusColor .Name}}"></div>
-                    <div class="graph-status-name">{{.Name}}</div>
+                    <div class="graph-status-name">{{.Name}}{{if .Optional}} <span class="graph-status-optional-tag">optional</span>{{end}}</div>
                     <div class="graph-status-meta">
                         <span class="graph-status-count" style="background:{{statusColor .Name}}1a;color:{{statusColor .Name}}">{{len .Issues}}</span>
                         {{if .RequireApproval}}<span class="graph-gate-icon" title="Requires human approval to enter this status">🔒</span>{{end}}

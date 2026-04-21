@@ -22,17 +22,19 @@ type transitionChecklistItem struct {
 }
 
 type transitionOutput struct {
-	From            string                    `json:"from"`
-	To              string                    `json:"to"`
-	Status          string                    `json:"status"`
-	Slug            string                    `json:"slug"`
-	File            string                    `json:"file"`
-	SideEffects     []string                  `json:"side_effects"`
-	Checklist       []transitionChecklistItem `json:"checklist"`
-	BodyChanged     bool                      `json:"body_changed"`
-	CommentsChanged bool                      `json:"comments_changed"`
-	NextStatus      string                    `json:"next_status,omitempty"`
-	Guidance        []string                  `json:"guidance,omitempty"`
+	From               string                    `json:"from"`
+	To                 string                    `json:"to"`
+	Status             string                    `json:"status"`
+	StatusOptional     bool                      `json:"status_optional,omitempty"`
+	Slug               string                    `json:"slug"`
+	File               string                    `json:"file"`
+	SideEffects        []string                  `json:"side_effects"`
+	Checklist          []transitionChecklistItem `json:"checklist"`
+	BodyChanged        bool                      `json:"body_changed"`
+	CommentsChanged    bool                      `json:"comments_changed"`
+	NextStatus         string                    `json:"next_status,omitempty"`
+	NextStatusOptional bool                      `json:"next_status_optional,omitempty"`
+	Guidance           []string                  `json:"guidance,omitempty"`
 }
 
 func logAction(args []string) {
@@ -649,10 +651,14 @@ Run 'issue-cli process <topic>' for details:
 			} else {
 				fmt.Print("  ")
 			}
+			name := s
+			if st := wf.GetStatus(s); st != nil && st.Optional {
+				name = s + " (optional)"
+			}
 			if desc != "" {
-				fmt.Printf("%-15s  %s\n", s, desc)
+				fmt.Printf("%-24s  %s\n", name, desc)
 			} else {
-				fmt.Printf("%s\n", s)
+				fmt.Printf("%s\n", name)
 			}
 		}
 	case "transitions":
@@ -674,8 +680,19 @@ Run 'issue-cli process <topic>' for details:
   shipping → done             Section checkboxes must be checked (## Shipping)
                                Must be human-approved in the issue viewer
 
-Transitions are strict — you cannot skip statuses.
+Transitions are strict — you cannot skip required statuses.
 `)
+		proj := loadProject(configPath, projectSlug)
+		wf := proj.LoadWorkflow()
+		var optional []string
+		for _, st := range wf.Statuses {
+			if st.Optional {
+				optional = append(optional, st.Name)
+			}
+		}
+		if len(optional) > 0 {
+			fmt.Printf("\nOptional statuses (skippable on forward transitions): %s\n", strings.Join(optional, ", "))
+		}
 	case "format":
 		fmt.Print(`== Issue File Format ==
 
@@ -926,7 +943,7 @@ func runStart(proj *tracker.Project, slug, assignee string) {
 	issue = started.Issue
 
 	fmt.Printf("== Starting work on: %s ==\n", issue.Title)
-	fmt.Printf("Status: backlog\n")
+	fmt.Printf("Status: %s\n", statusLabel(wf, "backlog"))
 
 	if started.Claimed {
 		fmt.Printf("✓ Claimed (assignee: %s)\n", assignee)
@@ -988,7 +1005,11 @@ func printWorkflowNextSteps(wf *tracker.WorkflowConfig, issue *tracker.Issue) {
 	next := wf.NextStatus(issue.Status)
 	if next != "" {
 		fmt.Println("== Next ==")
-		fmt.Printf("  issue-cli transition %s --to \"%s\"\n", issue.Slug, next)
+		suffix := ""
+		if s := wf.GetStatus(next); s != nil && s.Optional {
+			suffix = "   (optional — you may skip to the next required status)"
+		}
+		fmt.Printf("  issue-cli transition %s --to \"%s\"%s\n", issue.Slug, next, suffix)
 		prompts := wf.EntryPrompts(issue.Status, next)
 		if len(prompts) > 0 {
 			fmt.Println()
@@ -1012,9 +1033,10 @@ func runContext(proj *tracker.Project, slug string) {
 		return
 	}
 
+	wf := proj.LoadWorkflowForIssue(issue)
 	fmt.Printf("== %s ==\n", issue.Title)
 	fmt.Printf("Status: %s | System: %s | Priority: %s | Assignee: %s\n",
-		issue.Status, issue.System, issue.Priority, issue.Assignee)
+		statusLabel(wf, issue.Status), issue.System, issue.Priority, issue.Assignee)
 	fmt.Printf("File: %s\n\n", issue.FilePath)
 
 	fmt.Println("== Body ==")
@@ -1172,18 +1194,30 @@ func buildTransitionOutput(wf *tracker.WorkflowConfig, issue *tracker.Issue, fro
 	guidance = append(guidance, result.InjectedPrompts...)
 	guidance = append(guidance, wf.EntryPrompts(issue.Status, next)...)
 
+	statusOptional := false
+	if s := wf.GetStatus(issue.Status); s != nil {
+		statusOptional = s.Optional
+	}
+	nextOptional := false
+	if next != "" {
+		if s := wf.GetStatus(next); s != nil {
+			nextOptional = s.Optional
+		}
+	}
 	return transitionOutput{
-		From:            from,
-		To:              to,
-		Status:          issue.Status,
-		Slug:            issue.Slug,
-		File:            issue.FilePath,
-		SideEffects:     transitionSideEffects(result),
-		Checklist:       collectChecklist(issue.BodyRaw),
-		BodyChanged:     result.BodyChanged,
-		CommentsChanged: false,
-		NextStatus:      next,
-		Guidance:        guidance,
+		From:               from,
+		To:                 to,
+		Status:             issue.Status,
+		StatusOptional:     statusOptional,
+		Slug:               issue.Slug,
+		File:               issue.FilePath,
+		SideEffects:        transitionSideEffects(result),
+		Checklist:          collectChecklist(issue.BodyRaw),
+		BodyChanged:        result.BodyChanged,
+		CommentsChanged:    false,
+		NextStatus:         next,
+		NextStatusOptional: nextOptional,
+		Guidance:           guidance,
 	}
 }
 
@@ -1233,16 +1267,20 @@ func printTransitionResult(output transitionOutput) {
 
 	fmt.Printf("✓ %s → %s\n", output.From, output.To)
 	fmt.Printf("file: %s\n", output.File)
-	fmt.Printf("Status: %s\n", output.Status)
+	statusDisp := output.Status
+	if output.StatusOptional {
+		statusDisp += " (optional)"
+	}
+	fmt.Printf("Status: %s\n", statusDisp)
 	for _, effect := range output.SideEffects {
 		fmt.Printf("✓ %s\n", capitalize(effect))
 	}
 	fmt.Println()
 
-	printWorkflowNextStepsFromData(output.Checklist, output.Guidance, output.NextStatus, output.Slug)
+	printWorkflowNextStepsFromData(output.Checklist, output.Guidance, output.NextStatus, output.NextStatusOptional, output.Slug)
 }
 
-func printWorkflowNextStepsFromData(checklist []transitionChecklistItem, guidance []string, nextStatus, slug string) {
+func printWorkflowNextStepsFromData(checklist []transitionChecklistItem, guidance []string, nextStatus string, nextStatusOptional bool, slug string) {
 	if len(checklist) > 0 {
 		checked := 0
 		for _, item := range checklist {
@@ -1271,7 +1309,11 @@ func printWorkflowNextStepsFromData(checklist []transitionChecklistItem, guidanc
 
 	if nextStatus != "" {
 		fmt.Println("== Next ==")
-		fmt.Printf("  issue-cli transition %s --to \"%s\"\n", slug, nextStatus)
+		suffix := ""
+		if nextStatusOptional {
+			suffix = "   (optional — you may skip to the next required status)"
+		}
+		fmt.Printf("  issue-cli transition %s --to \"%s\"%s\n", slug, nextStatus, suffix)
 	}
 }
 
@@ -1280,6 +1322,17 @@ func capitalize(s string) string {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// statusLabel returns the status name, appending " (optional)" when the workflow marks it skippable.
+func statusLabel(wf *tracker.WorkflowConfig, status string) string {
+	if wf == nil || status == "" {
+		return status
+	}
+	if s := wf.GetStatus(status); s != nil && s.Optional {
+		return status + " (optional)"
+	}
+	return status
 }
 
 func runClaim(proj *tracker.Project, slug, assignee string) {
@@ -1368,7 +1421,7 @@ func runDone(proj *tracker.Project, slug string) {
 	fmt.Println("== Validation ==")
 	fmt.Println("✓ done: all checks passed")
 
-	fmt.Printf("\n✓ Status → %s\n", issue.Status)
+	fmt.Printf("\n✓ Status → %s\n", statusLabel(wf, issue.Status))
 	fmt.Println("✓ Assignee cleared")
 	fmt.Printf("file: %s\n", issue.FilePath)
 }
@@ -1634,7 +1687,11 @@ func runStats(proj *tracker.Project) {
 	fmt.Println("By status:")
 	for _, s := range wf.GetStatusOrder() {
 		if n, ok := byStatus[s]; ok {
-			fmt.Printf("  %-15s %d\n", s, n)
+			label := s
+			if st := wf.GetStatus(s); st != nil && st.Optional {
+				label = s + " (optional)"
+			}
+			fmt.Printf("  %-24s %d\n", label, n)
 		}
 	}
 
