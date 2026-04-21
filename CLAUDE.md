@@ -110,6 +110,7 @@ Downloads all items from `github.com/users/michal-franc/projects/4` and writes t
 
 - `/` — filterable issue list (status, system, priority, label, search)
 - `/board` — kanban board with status columns, version filter
+- `/graph` — workflow status graph: all issues positioned on their current status node in the workflow DAG. Stale issues highlighted (yellow 7d+, red 14d+). Statuses requiring human approval marked with 🔒. Filterable by system; done hidden by default.
 - `/docs` — documentation pages with sidebar navigation
 - `/issue/<slug>` — issue detail with sidebar metadata
 
@@ -120,7 +121,8 @@ The board and detail views can dispatch issues to AI agents (Claude or Codex) vi
 - **Board view** — hover a card, click the play button, pick Claude or Codex
 - **Detail view** — two buttons in the sidebar (Claude / Codex)
 - **Backend** — `POST /p/<project>/issue/<slug>/dispatch` with `{"agent": "claude"}` or `{"agent": "codex"}`
-- The handler creates a tmux session, opens alacritty, starts the selected agent, and pastes the generated prompt
+- The handler creates a tmux session, opens a terminal (configurable via `terminal` in `projects.yaml`), starts the selected agent, and pastes the generated prompt
+- `terminal` supports `{{session}}` substitution and runs via `sh -c`; set to `none` for headless (returns `attach_cmd` in response); defaults to i3+alacritty if unset
 
 ## Workflow Side-Effects
 

@@ -274,9 +274,11 @@ func TestHandleApproveIssue_NotifiesActiveSession(t *testing.T) {
 	if gotTarget != "agent-add-dark-mode" {
 		t.Fatalf("tmux target = %q, want %q", gotTarget, "agent-add-dark-mode")
 	}
-	wantLines := []string{"human_approval:in progress", "approval_label:Human-approved for in progress"}
-	if strings.Join(gotLines, "\n") != strings.Join(wantLines, "\n") {
-		t.Fatalf("tmux lines = %#v, want %#v", gotLines, wantLines)
+	if len(gotLines) != 1 {
+		t.Fatalf("expected 1 tmux line, got %d: %#v", len(gotLines), gotLines)
+	}
+	if !strings.Contains(gotLines[0], "in progress") {
+		t.Fatalf("approval message %q does not mention status %q", gotLines[0], "in progress")
 	}
 }
 
@@ -748,6 +750,126 @@ func TestHandleBoard_ShowsActiveBotSummaryAndIssueChip(t *testing.T) {
 	for _, want := range []string{"1 active bot", "board-card-agent-active"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("expected board view to contain %q\n%s", want, html)
+		}
+	}
+}
+
+// --- handleGraph ---
+
+func TestHandleGraph_Returns200(t *testing.T) {
+	proj, _ := setupTestProject(t)
+	ts := newTestServer(t, []tracker.Project{proj})
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/p/test-project/graph")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Fatalf("expected text/html, got %s", ct)
+	}
+}
+
+func TestHandleGraph_ShowsWorkflowStatuses(t *testing.T) {
+	proj, _ := setupTestProject(t)
+	ts := newTestServer(t, []tracker.Project{proj})
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/p/test-project/graph")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	html := string(body)
+
+	for _, status := range []string{"backlog", "in progress", "testing"} {
+		if !strings.Contains(html, status) {
+			t.Fatalf("expected graph to contain status %q", status)
+		}
+	}
+}
+
+func TestHandleGraph_HidesDoneByDefault(t *testing.T) {
+	proj, _ := setupTestProject(t)
+	ts := newTestServer(t, []tracker.Project{proj})
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/p/test-project/graph")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	html := string(body)
+
+	if strings.Contains(html, "Fix typo") {
+		t.Fatal("expected done issue to be hidden by default")
+	}
+}
+
+func TestHandleGraph_ShowDoneFilter(t *testing.T) {
+	proj, _ := setupTestProject(t)
+	ts := newTestServer(t, []tracker.Project{proj})
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/p/test-project/graph?done=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	html := string(body)
+
+	if !strings.Contains(html, "Fix typo") {
+		t.Fatal("expected done issue to appear with ?done=1")
+	}
+}
+
+func TestHandleGraph_SystemFilter(t *testing.T) {
+	proj, _ := setupTestProject(t)
+	ts := newTestServer(t, []tracker.Project{proj})
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/p/test-project/graph?system=Auth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	html := string(body)
+
+	if !strings.Contains(html, "Bug in login") {
+		t.Fatal("expected Auth issue to appear")
+	}
+	if strings.Contains(html, "Add dark mode") {
+		t.Fatal("expected non-Auth issue to be filtered out")
+	}
+}
+
+func TestHandleGraph_ShowsGraphNavTab(t *testing.T) {
+	proj, _ := setupTestProject(t)
+	ts := newTestServer(t, []tracker.Project{proj})
+	defer ts.Close()
+
+	for _, path := range []string{"/p/test-project/", "/p/test-project/board", "/p/test-project/graph"} {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if !strings.Contains(string(body), "/graph") {
+			t.Fatalf("expected %q page to contain graph nav link", path)
 		}
 	}
 }

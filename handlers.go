@@ -281,6 +281,8 @@ func (s *Server) handleProjectRoutes(w http.ResponseWriter, r *http.Request) {
 		s.handleList(w, r, proj, prefix)
 	case rest == "board":
 		s.handleBoard(w, r, proj, prefix)
+	case rest == "graph":
+		s.handleGraph(w, r, proj, prefix)
 	case rest == "retros":
 		s.handleRetros(w, r, proj, prefix)
 	case rest == "retros/review" && r.Method == http.MethodPost:
@@ -607,6 +609,37 @@ type WorkflowFlowData struct {
 	ProjectName string
 }
 
+// --- Graph ---
+
+type GraphStatusNode struct {
+	Name            string
+	Description     string
+	RequireApproval bool
+	Issues          []*GraphIssueNode
+}
+
+type GraphIssueNode struct {
+	Slug         string
+	Title        string
+	System       string
+	Priority     string
+	Assignee     string
+	DaysInStatus int
+	IsStale      bool
+	IsVeryStale  bool
+}
+
+type GraphData struct {
+	Prefix      string
+	ProjectName string
+	ActiveBots  int
+	StatusNodes []*GraphStatusNode
+	Systems     []string
+	System      string
+	ShowDone    bool
+	TotalIssues int
+}
+
 type RetroEntry struct {
 	FileName     string
 	FilePath     string
@@ -775,6 +808,119 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *track
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "board.html", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	issues, err := tracker.LoadIssues(proj.IssueDir)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	wf := proj.LoadWorkflow()
+
+	// Which statuses require human approval to enter
+	approvalRequired := map[string]bool{}
+	for _, t := range wf.Transitions {
+		for _, a := range t.Actions {
+			if a.Type == "require_human_approval" {
+				target := strings.TrimSpace(a.Status)
+				if target == "" {
+					target = t.To
+				}
+				approvalRequired[target] = true
+			}
+		}
+	}
+
+	systemFilter := r.URL.Query().Get("system")
+	showDone := r.URL.Query().Get("done") == "1"
+
+	systemSet := map[string]bool{}
+	for _, issue := range issues {
+		if issue.System != "" {
+			systemSet[issue.System] = true
+		}
+	}
+	var systems []string
+	for sys := range systemSet {
+		systems = append(systems, sys)
+	}
+	systems = mergeSubdirSystems(systems, proj.IssueDir)
+
+	now := time.Now()
+	statusOrder := wf.GetStatusOrder()
+	statusDescs := wf.GetStatusDescriptions()
+
+	nodeMap := map[string]*GraphStatusNode{}
+	for _, name := range statusOrder {
+		nodeMap[name] = &GraphStatusNode{
+			Name:            name,
+			Description:     statusDescs[name],
+			RequireApproval: approvalRequired[name],
+		}
+	}
+
+	totalIssues := 0
+	for _, issue := range issues {
+		if !showDone && issue.Status == "done" {
+			continue
+		}
+		if systemFilter != "" && !strings.EqualFold(issue.System, systemFilter) {
+			continue
+		}
+		totalIssues++
+
+		days := int(now.Sub(issue.ModTime).Hours() / 24)
+		node := &GraphIssueNode{
+			Slug:         issue.Slug,
+			Title:        issue.Title,
+			System:       issue.System,
+			Priority:     issue.Priority,
+			Assignee:     issue.Assignee,
+			DaysInStatus: days,
+			IsStale:      days >= 7,
+			IsVeryStale:  days >= 14,
+		}
+
+		status := issue.Status
+		if status == "" {
+			status = "none"
+		}
+		if sn, ok := nodeMap[status]; ok {
+			sn.Issues = append(sn.Issues, node)
+		} else {
+			nodeMap[status] = &GraphStatusNode{Name: status, Issues: []*GraphIssueNode{node}}
+		}
+	}
+
+	var nodes []*GraphStatusNode
+	for _, name := range statusOrder {
+		if !showDone && name == "done" {
+			continue
+		}
+		if sn, ok := nodeMap[name]; ok {
+			nodes = append(nodes, sn)
+		}
+	}
+
+	_, activeBots := sessionsByIssueSlug(issues)
+
+	data := GraphData{
+		Prefix:      prefix,
+		ProjectName: proj.Name,
+		ActiveBots:  activeBots,
+		StatusNodes: nodes,
+		Systems:     systems,
+		System:      systemFilter,
+		ShowDone:    showDone,
+		TotalIssues: totalIssues,
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.tmpl.ExecuteTemplate(w, "graph.html", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
