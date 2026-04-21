@@ -1511,6 +1511,10 @@ func (s *Server) handleUpdateIssue(w http.ResponseWriter, r *http.Request, proj 
 		return
 	}
 
+	if update.Status != nil && *update.Status == "done" && found.Repo != "" && found.Number > 0 {
+		go closeGithubIssue(found)
+	}
+
 	newSlug := found.Slug
 	if update.Title != nil {
 		newSlug = tracker.Slugify(*update.Title)
@@ -1527,6 +1531,27 @@ func (s *Server) handleUpdateIssue(w http.ResponseWriter, r *http.Request, proj 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "slug": newSlug})
+}
+
+func closeGithubIssue(issue *tracker.Issue) {
+	comment := fmt.Sprintf("Closed via issue-viewer.\n\nImplementation tracked in local issue: %s", issue.Title)
+	if issue.BodyRaw != "" {
+		comment += "\n\n---\n\n" + issue.BodyRaw
+	}
+	token, err := exec.Command(os.ExpandEnv("$HOME/Work/michal-franc-agent/gh-app-token")).Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "closeGithubIssue: get token: %v\n", err)
+		return
+	}
+	args := []string{"issue", "close", fmt.Sprintf("%d", issue.Number),
+		"--repo", issue.Repo,
+		"--comment", comment,
+	}
+	cmd := exec.Command("gh", args...)
+	cmd.Env = append(os.Environ(), "GH_TOKEN="+strings.TrimSpace(string(token)))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "closeGithubIssue: gh issue close: %v\n%s\n", err, out)
+	}
 }
 
 // --- Comments ---

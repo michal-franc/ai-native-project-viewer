@@ -76,6 +76,8 @@ transitions:
   - from: "backlog"
     to: "in progress"
     actions:
+      - type: "require_human_approval"
+        status: "in progress"
       - type: "validate"
         rule: "has_assignee"
       - type: "append_section"

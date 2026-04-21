@@ -137,10 +137,34 @@
                     </div>
                 </div>
 
+                {{if .Issue.GithubURL}}
+                <div class="sidebar-section">
+                    <h3>GitHub Issue</h3>
+                    <div class="sidebar-value"><a href="{{.Issue.GithubURL}}" target="_blank" rel="noopener">{{.Issue.Repo}}#{{.Issue.Number}}</a></div>
+                </div>
+                {{end}}
+
                 {{if .Issue.Created}}
                 <div class="sidebar-section">
                     <h3>Created</h3>
                     <div class="sidebar-value">{{.Issue.Created}}</div>
+                </div>
+                {{end}}
+
+                {{range .Issue.ExtraFields}}
+                <div class="sidebar-section">
+                    <h3>{{.Label}}</h3>
+                    <div class="sidebar-value">
+                        {{if .IsList}}
+                        <ul style="margin:0;padding-left:1.2em">
+                            {{range .Values}}<li>{{.}}</li>{{end}}
+                        </ul>
+                        {{else if .IsURL}}
+                        <a href="{{.Value}}" target="_blank" rel="noopener">{{.Value}}</a>
+                        {{else}}
+                        {{.Value}}
+                        {{end}}
+                    </div>
                 </div>
                 {{end}}
 

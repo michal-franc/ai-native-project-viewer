@@ -12,7 +12,63 @@ import (
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
+	"gopkg.in/yaml.v3"
 )
+
+// ExtraField holds a single unknown frontmatter field for display in the sidebar.
+type ExtraField struct {
+	Key    string
+	Label  string
+	Value  string
+	Values []string
+	IsURL  bool
+	IsList bool
+}
+
+var knownFrontmatterFields = map[string]bool{
+	"title": true, "status": true, "system": true, "version": true,
+	"labels": true, "priority": true, "assignee": true,
+	"human_approval": true, "approved_for": true,
+	"started_at": true, "done_at": true, "created": true,
+	"number": true, "repo": true,
+}
+
+func formatFieldLabel(key string) string {
+	words := strings.Split(key, "_")
+	for i, w := range words {
+		if len(w) > 0 {
+			words[i] = strings.ToUpper(w[:1]) + w[1:]
+		}
+	}
+	return strings.Join(words, " ")
+}
+
+func extractExtraFields(rawMap map[string]interface{}) []ExtraField {
+	var keys []string
+	for k := range rawMap {
+		if !knownFrontmatterFields[k] {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+
+	var fields []ExtraField
+	for _, k := range keys {
+		ef := ExtraField{Key: k, Label: formatFieldLabel(k)}
+		switch val := rawMap[k].(type) {
+		case []interface{}:
+			ef.IsList = true
+			for _, item := range val {
+				ef.Values = append(ef.Values, fmt.Sprintf("%v", item))
+			}
+		default:
+			ef.Value = fmt.Sprintf("%v", val)
+			ef.IsURL = strings.HasPrefix(ef.Value, "http://") || strings.HasPrefix(ef.Value, "https://")
+		}
+		fields = append(fields, ef)
+	}
+	return fields
+}
 
 // StatusOrder defines the workflow lifecycle.
 var StatusOrder = []string{
@@ -43,13 +99,17 @@ type Issue struct {
 	StartedAt      string   `yaml:"started_at"`
 	DoneAt         string   `yaml:"done_at"`
 	Created        string   `yaml:"created"`
+	Number         int      `yaml:"number"`
+	Repo           string   `yaml:"repo"`
 
 	// Computed fields
-	Slug     string    `yaml:"-"`
-	FilePath string    `yaml:"-"`
-	ModTime  time.Time `yaml:"-"`
-	BodyHTML string    `yaml:"-"`
-	BodyRaw  string    `yaml:"-"`
+	Slug        string       `yaml:"-"`
+	FilePath    string       `yaml:"-"`
+	ModTime     time.Time    `yaml:"-"`
+	BodyHTML    string       `yaml:"-"`
+	BodyRaw     string       `yaml:"-"`
+	GithubURL   string       `yaml:"-"`
+	ExtraFields []ExtraField `yaml:"-"`
 }
 
 func ParseIssue(filename string, data []byte) (*Issue, error) {
@@ -76,6 +136,20 @@ func ParseIssue(filename string, data []byte) (*Issue, error) {
 	issue.System = strings.TrimSpace(issue.System)
 	if issue.HumanApproval == "" {
 		issue.HumanApproval = strings.TrimSpace(issue.LegacyApproval)
+	}
+	if issue.Repo != "" && issue.Number > 0 {
+		issue.GithubURL = fmt.Sprintf("https://github.com/%s/issues/%d", issue.Repo, issue.Number)
+	}
+
+	// Extract unknown frontmatter fields for display
+	if strings.HasPrefix(string(data), "---") {
+		parts := strings.SplitN(string(data)[3:], "\n---", 2)
+		if len(parts) >= 1 {
+			var rawMap map[string]interface{}
+			if yaml.Unmarshal([]byte(parts[0]), &rawMap) == nil {
+				issue.ExtraFields = extractExtraFields(rawMap)
+			}
+		}
 	}
 
 	return issue, nil

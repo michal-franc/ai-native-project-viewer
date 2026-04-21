@@ -62,6 +62,75 @@ This is the body.
 	}
 }
 
+func TestParseIssue_ExtraFields(t *testing.T) {
+	data := []byte(`---
+title: "My Issue"
+status: "backlog"
+jira: "https://example.com/browse/TICKET-123"
+pr: "https://github.com/org/repo/pull/456"
+pr_author: "someone"
+risk: "low"
+participants:
+  - alice
+  - bob
+---
+
+body
+`)
+	issue, err := ParseIssue("test.md", data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	byKey := map[string]ExtraField{}
+	for _, ef := range issue.ExtraFields {
+		byKey[ef.Key] = ef
+	}
+
+	if jira, ok := byKey["jira"]; !ok {
+		t.Error("expected jira field")
+	} else if !jira.IsURL {
+		t.Errorf("jira.IsURL = false, want true")
+	} else if jira.Value != "https://example.com/browse/TICKET-123" {
+		t.Errorf("jira.Value = %q", jira.Value)
+	}
+
+	if pr, ok := byKey["pr"]; !ok {
+		t.Error("expected pr field")
+	} else if !pr.IsURL {
+		t.Errorf("pr.IsURL = false, want true")
+	}
+
+	if author, ok := byKey["pr_author"]; !ok {
+		t.Error("expected pr_author field")
+	} else if author.Label != "Pr Author" {
+		t.Errorf("pr_author.Label = %q, want %q", author.Label, "Pr Author")
+	} else if author.IsURL || author.IsList {
+		t.Errorf("pr_author should be plain text")
+	}
+
+	if risk, ok := byKey["risk"]; !ok {
+		t.Error("expected risk field")
+	} else if risk.Value != "low" {
+		t.Errorf("risk.Value = %q, want %q", risk.Value, "low")
+	}
+
+	if parts, ok := byKey["participants"]; !ok {
+		t.Error("expected participants field")
+	} else if !parts.IsList {
+		t.Errorf("participants.IsList = false, want true")
+	} else if len(parts.Values) != 2 || parts.Values[0] != "alice" || parts.Values[1] != "bob" {
+		t.Errorf("participants.Values = %v, want [alice bob]", parts.Values)
+	}
+
+	// Known fields should not appear in ExtraFields
+	for _, ef := range issue.ExtraFields {
+		if knownFrontmatterFields[ef.Key] {
+			t.Errorf("known field %q leaked into ExtraFields", ef.Key)
+		}
+	}
+}
+
 func TestParseIssue_MissingFrontmatter(t *testing.T) {
 	data := []byte("Just some text without frontmatter")
 	_, err := ParseIssue("test.md", data)

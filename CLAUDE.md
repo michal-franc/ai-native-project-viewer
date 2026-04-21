@@ -63,6 +63,18 @@ Markdown body here. Supports `[x]` checkboxes.
 - `number` — GitHub issue number (used in board card display as `#number`)
 - `repo` — GitHub repo in `owner/repo` format
 
+### Custom fields
+
+Any other frontmatter key is preserved as a custom field and displayed in the detail view sidebar. String values that start with `http://` or `https://` render as clickable links. List values render as bullet lists. Example:
+
+```yaml
+pr: "https://github.com/org/repo/pull/456"   # renders as a link
+pr_author: "jsmith"                            # renders as text
+participants:                                  # renders as a list
+  - alice
+  - bob
+```
+
 ### Filename convention
 
 - For GitHub issues: `<number>.md` (e.g., `42.md`)

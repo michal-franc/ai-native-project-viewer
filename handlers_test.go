@@ -745,7 +745,7 @@ func TestHandleBoard_ShowsActiveBotSummaryAndIssueChip(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := string(body)
-	for _, want := range []string{"1 active bot", "1 agent active"} {
+	for _, want := range []string{"1 active bot", "board-card-agent-active"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("expected board view to contain %q\n%s", want, html)
 		}
