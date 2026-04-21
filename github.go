@@ -52,19 +52,32 @@ func FetchGitHubIssues(repo string) ([]GitHubIssue, error) {
 	return issues, nil
 }
 
-// LocalIssueNumbers returns the set of GitHub issue numbers already present in the project.
-func LocalIssueNumbers(proj *tracker.Project) (map[int]bool, error) {
+// LocalGitHubURLs returns the set of GitHub issue URLs already present in the
+// project. An issue contributes its computed URL (from `repo` + `number`) and,
+// if set, any explicit `github_url` frontmatter value. The URL is the canonical
+// reference — matching on it avoids the ambiguity of bare issue numbers.
+func LocalGitHubURLs(proj *tracker.Project) (map[string]bool, error) {
 	issues, err := tracker.LoadIssues(proj.IssueDir)
 	if err != nil {
 		return nil, err
 	}
-	numbers := make(map[int]bool, len(issues))
+	urls := make(map[string]bool, len(issues))
 	for _, iss := range issues {
-		if iss.Number > 0 {
-			numbers[iss.Number] = true
+		if iss.GithubURL != "" {
+			urls[iss.GithubURL] = true
+		}
+		for _, ef := range iss.ExtraFields {
+			if ef.Key == "github_url" && ef.Value != "" {
+				urls[ef.Value] = true
+			}
 		}
 	}
-	return numbers, nil
+	return urls, nil
+}
+
+// RemoteIssueURL returns the canonical GitHub URL for a remote issue.
+func RemoteIssueURL(repo string, number int) string {
+	return fmt.Sprintf("https://github.com/%s/issues/%d", repo, number)
 }
 
 // ImportGitHubIssue writes a single GitHub issue to <issueDir>/<number>.md with status=backlog.
@@ -85,6 +98,7 @@ func ImportGitHubIssue(proj *tracker.Project, gh GitHubIssue) (string, error) {
 	b.WriteString(fmt.Sprintf("number: %d\n", gh.Number))
 	if proj.Repo != "" {
 		b.WriteString(fmt.Sprintf("repo: %q\n", proj.Repo))
+		b.WriteString(fmt.Sprintf("github_url: %q\n", RemoteIssueURL(proj.Repo, gh.Number)))
 	}
 	b.WriteString(fmt.Sprintf("created: %q\n", gh.UpdatedAt.Format("2006-01-02")))
 	if len(gh.Labels) > 0 {

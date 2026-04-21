@@ -2944,13 +2944,13 @@ func (s *Server) handleGitHubFetch(w http.ResponseWriter, r *http.Request, proj 
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	local, err := LocalIssueNumbers(proj)
+	local, err := LocalGitHubURLs(proj)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	for i := range remote {
-		remote[i].Imported = local[remote[i].Number]
+		remote[i].Imported = local[RemoteIssueURL(proj.Repo, remote[i].Number)]
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
