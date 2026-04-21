@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"os/exec"
@@ -1807,9 +1808,9 @@ func (s *Server) handleApproveIssue(w http.ResponseWriter, r *http.Request, proj
 		} else {
 			target := activeSessions[0].Name
 			messageLines := []string{
-				fmt.Sprintf("human_approval:%s", body.Status),
-				fmt.Sprintf("approval_label:%s", approvalLabel(body.Status)),
-			}
+					fmt.Sprintf("human_approval:%s", body.Status),
+					fmt.Sprintf("approval_label:%s", approvalLabel(body.Status)),
+				}
 			if err := tmuxSendKeys(target, messageLines); err != nil {
 				resp.NotificationError = err.Error()
 			} else {
@@ -1821,6 +1822,24 @@ func (s *Server) handleApproveIssue(w http.ResponseWriter, r *http.Request, proj
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+var humanApprovalMessages = []string{
+	"Hey, looks good — you're approved to move to %s, go ahead.",
+	"Alright, I've reviewed it. You can move to %s now.",
+	"Approved for %s. Go for it.",
+	"Yeah, this is ready for %s. Carry on.",
+	"Checked it out — %s is approved, move it along.",
+	"Good to go for %s. No blockers from my end.",
+	"I've had a look and I'm happy with it. %s is approved.",
+	"All good on my side, you can proceed to %s.",
+	"Gave this a read — approved for %s, off you go.",
+	"This looks solid. Moving to %s is fine by me.",
+}
+
+func humanApprovalMessage(status string) string {
+	tmpl := humanApprovalMessages[rand.Intn(len(humanApprovalMessages))]
+	return fmt.Sprintf(tmpl, status)
 }
 
 func approvalLabel(status string) string {
@@ -1900,14 +1919,27 @@ func startIssueBodyEditor(proj *tracker.Project, issue *tracker.Issue) (BodyEdit
 
 	exec.Command("tmux", "rename-window", "-t", session, issue.Slug).Run()
 
-	if proj != nil && proj.I3Workspace != "" {
-		if err := exec.Command("i3-msg", "workspace", proj.I3Workspace).Run(); err != nil {
-			return BodyEditResponse{}, fmt.Errorf("switch i3 workspace: %w", err)
-		}
+	terminal := ""
+	if proj != nil {
+		terminal = proj.Terminal
 	}
-
-	if err := exec.Command("i3-msg", "exec", fmt.Sprintf("alacritty -e tmux attach -t %s", session)).Run(); err != nil {
-		return BodyEditResponse{}, fmt.Errorf("open alacritty: %w", err)
+	if terminal == "none" {
+		return BodyEditResponse{}, fmt.Errorf("terminal is 'none': attach manually with: tmux attach -t %s", session)
+	} else if terminal != "" {
+		termCmd := strings.ReplaceAll(terminal, "{{session}}", session)
+		if err := exec.Command("sh", "-c", termCmd).Run(); err != nil {
+			return BodyEditResponse{}, fmt.Errorf("open terminal: %w", err)
+		}
+	} else {
+		// Backwards compat: i3 + alacritty
+		if proj != nil && proj.I3Workspace != "" {
+			if err := exec.Command("i3-msg", "workspace", proj.I3Workspace).Run(); err != nil {
+				return BodyEditResponse{}, fmt.Errorf("switch i3 workspace: %w", err)
+			}
+		}
+		if err := exec.Command("i3-msg", "exec", fmt.Sprintf("alacritty -e tmux attach -t %s", session)).Run(); err != nil {
+			return BodyEditResponse{}, fmt.Errorf("open alacritty: %w", err)
+		}
 	}
 
 	time.Sleep(500 * time.Millisecond)
@@ -2206,11 +2238,12 @@ type DispatchStep struct {
 }
 
 type DispatchResponse struct {
-	Status  string         `json:"status"`
-	Prompt  string         `json:"prompt"`
-	Session string         `json:"session"`
-	LogFile string         `json:"log_file,omitempty"`
-	Steps   []DispatchStep `json:"steps"`
+	Status    string         `json:"status"`
+	Prompt    string         `json:"prompt"`
+	Session   string         `json:"session"`
+	LogFile   string         `json:"log_file,omitempty"`
+	AttachCmd string         `json:"attach_cmd,omitempty"`
+	Steps     []DispatchStep `json:"steps"`
 }
 
 var dispatchAgentSession = startAgentSession
@@ -2235,6 +2268,36 @@ func runStep(steps *[]DispatchStep, name string, cmd *exec.Cmd) bool {
 	}
 	*steps = append(*steps, DispatchStep{Name: name, Status: "ok"})
 	return true
+}
+
+// openTerminalStep opens a terminal attached to the given tmux session.
+// Uses proj.Terminal if set; falls back to i3+alacritty for backwards compat.
+// terminal="none" is headless: appends an info step and returns true.
+func openTerminalStep(proj *tracker.Project, session string, steps *[]DispatchStep) bool {
+	terminal := ""
+	if proj != nil {
+		terminal = proj.Terminal
+	}
+
+	if terminal == "none" {
+		*steps = append(*steps, DispatchStep{Name: "Terminal: headless — attach manually", Status: "ok"})
+		return true
+	}
+
+	if terminal != "" {
+		cmd := strings.ReplaceAll(terminal, "{{session}}", session)
+		return runStep(steps, "Open terminal", exec.Command("sh", "-c", cmd))
+	}
+
+	// Backwards compat: i3 + alacritty
+	if proj != nil && proj.I3Workspace != "" {
+		if !runStep(steps, fmt.Sprintf("Switch to workspace %s", proj.I3Workspace),
+			exec.Command("i3-msg", "workspace", proj.I3Workspace)) {
+			return false
+		}
+	}
+	return runStep(steps, "Open alacritty",
+		exec.Command("i3-msg", "exec", fmt.Sprintf("alacritty -e tmux attach -t %s", session)))
 }
 
 func startAgentSession(proj *tracker.Project, session string, prompt string, issueSlug string, agentType string) DispatchResponse {
@@ -2298,16 +2361,13 @@ func startAgentSession(proj *tracker.Project, session string, prompt string, iss
 	runStep(&steps, fmt.Sprintf("cd %s", workDir),
 		exec.Command("tmux", "send-keys", "-t", session, fmt.Sprintf("cd %q", workDir), "Enter"))
 
-	if ws := proj.I3Workspace; ws != "" {
-		runStep(&steps, fmt.Sprintf("Switch to workspace %s", ws),
-			exec.Command("i3-msg", "workspace", ws))
-	}
-
-	if !runStep(&steps, "Open alacritty",
-		exec.Command("i3-msg", "exec", fmt.Sprintf("alacritty -e tmux attach -t %s", session))) {
+	if !openTerminalStep(proj, session, &steps) {
 		response.Status = "error"
 		response.Steps = steps
 		return response
+	}
+	if proj != nil && proj.Terminal == "none" {
+		response.AttachCmd = fmt.Sprintf("tmux attach -t %s", session)
 	}
 
 	time.Sleep(500 * time.Millisecond)

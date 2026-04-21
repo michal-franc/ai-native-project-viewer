@@ -16,6 +16,7 @@ type Project struct {
 	Version      string `yaml:"version"`
 	WorkDir      string `yaml:"workdir"`
 	I3Workspace  string `yaml:"i3_workspace"`
+	Terminal     string `yaml:"terminal"`
 }
 
 // LoadWorkflow loads the project's workflow config.
