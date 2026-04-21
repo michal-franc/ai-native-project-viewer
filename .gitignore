@@ -11,3 +11,8 @@ projects-*.yaml
 
 # Test data
 /test-issues/
+
+# Local agent data
+/.agent-logs/
+/retros/
+/bugs/
