@@ -590,6 +590,12 @@ Every issue follows this lifecycle:
   - ALWAYS read and act on the full output of every command — it contains next steps
   - If a command fails, fix the issue it describes, do not retry blindly
 
+== Build/test failures from unrelated WIP files ==
+  - If 'make test' or the build fails due to pre-existing untracked/WIP files unrelated to
+    your issue, document the failure in a comment (issue-cli comment <slug> --text "..."),
+    note that the cause is unrelated to your changes, and stop — do NOT modify, stash, or
+    delete those files
+
 == When you pick up an issue ==
   1. If the issue is in backlog, confirm it is approved for in-progress in the viewer
   2. issue-cli start <slug>          — starts the approved issue, claims it, and shows next steps
@@ -802,7 +808,7 @@ func runNext(proj *tracker.Project, design bool, version string) {
 			}
 			fmt.Printf("  [%-8s] %-45s %s\n", p, issue.Slug, issue.System)
 		}
-		fmt.Println("\nPick one: issue-cli start <slug>")
+		fmt.Println("\nPick one: issue-cli claim <slug>")
 		return
 	}
 
@@ -1116,7 +1122,7 @@ func runCreate(proj *tracker.Project, args []string) {
 	if tmpl != "" {
 		fmt.Println("✓ Template checkboxes added to issue body")
 	}
-	fmt.Printf("\nNext: issue-cli start %s\n", slug)
+	fmt.Println("\nThank you!")
 }
 
 func runTransition(proj *tracker.Project, slug, to string) {
