@@ -297,6 +297,12 @@ func (s *Server) handleProjectRoutes(w http.ResponseWriter, r *http.Request) {
 		s.handleBoard(w, r, proj, prefix)
 	case rest == "graph":
 		s.handleGraph(w, r, proj, prefix)
+	case rest == "github" && r.Method == http.MethodGet:
+		s.handleGitHub(w, r, proj, prefix)
+	case rest == "github/fetch" && r.Method == http.MethodPost:
+		s.handleGitHubFetch(w, r, proj)
+	case rest == "github/import" && r.Method == http.MethodPost:
+		s.handleGitHubImport(w, r, proj)
 	case rest == "retros":
 		s.handleRetros(w, r, proj, prefix)
 	case rest == "retros/review" && r.Method == http.MethodPost:
@@ -407,18 +413,19 @@ func (s *Server) handleProjectList(w http.ResponseWriter, r *http.Request) {
 // --- Issue List ---
 
 type ListData struct {
-	Issues      []*IssueView
-	Statuses    []string
-	Systems     []string
-	Priorities  []string
-	Labels      []string
-	Assignees   []string
-	Filter      FilterParams
-	Total       int
-	Filtered    int
-	Prefix      string
-	ProjectName string
-	ActiveBots  int
+	Issues         []*IssueView
+	Statuses       []string
+	Systems        []string
+	Priorities     []string
+	Labels         []string
+	Assignees      []string
+	Filter         FilterParams
+	Total          int
+	Filtered       int
+	Prefix         string
+	ProjectName    string
+	ActiveBots     int
+	SupportsGitHub bool
 }
 
 type FilterParams struct {
@@ -460,12 +467,13 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request, proj *tracke
 		Priorities:  priorities,
 		Labels:      labels,
 		Assignees:   assignees,
-		Filter:      filter,
-		Total:       total,
-		Filtered:    len(filtered),
-		Prefix:      prefix,
-		ProjectName: proj.Name,
-		ActiveBots:  activeBots,
+		Filter:         filter,
+		Total:          total,
+		Filtered:       len(filtered),
+		Prefix:         prefix,
+		ProjectName:    proj.Name,
+		ActiveBots:     activeBots,
+		SupportsGitHub: proj.SupportsGitHub,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -592,20 +600,21 @@ type BoardCardField struct {
 }
 
 type BoardData struct {
-	Columns     []*BoardColumn
-	Total       int
-	Versions    []string
-	Version     string
-	Systems     []string
-	System      string
-	Assignees   []string
-	Assignee    string
-	Priorities  []string
-	Labels      []string
-	Prefix      string
-	ProjectName string
-	ActiveBots  int
-	CardFields  []string
+	Columns        []*BoardColumn
+	Total          int
+	Versions       []string
+	Version        string
+	Systems        []string
+	System         string
+	Assignees      []string
+	Assignee       string
+	Priorities     []string
+	Labels         []string
+	Prefix         string
+	ProjectName    string
+	ActiveBots     int
+	CardFields     []string
+	SupportsGitHub bool
 }
 
 type WorkflowDesignerData struct {
@@ -616,11 +625,13 @@ type WorkflowDesignerData struct {
 	WorkflowIssues string
 	WorkflowSource string
 	WorkflowTarget string
+	SupportsGitHub bool
 }
 
 type WorkflowFlowData struct {
-	Prefix      string
-	ProjectName string
+	Prefix         string
+	ProjectName    string
+	SupportsGitHub bool
 }
 
 // --- Graph ---
@@ -644,14 +655,15 @@ type GraphIssueNode struct {
 }
 
 type GraphData struct {
-	Prefix      string
-	ProjectName string
-	ActiveBots  int
-	StatusNodes []*GraphStatusNode
-	Systems     []string
-	System      string
-	ShowDone    bool
-	TotalIssues int
+	Prefix         string
+	ProjectName    string
+	ActiveBots     int
+	StatusNodes    []*GraphStatusNode
+	Systems        []string
+	System         string
+	ShowDone       bool
+	TotalIssues    int
+	SupportsGitHub bool
 }
 
 type RetroEntry struct {
@@ -679,15 +691,16 @@ type ToolBugReportView struct {
 }
 
 type RetrosData struct {
-	Retros      []*RetroEntry
-	Bugs        []*ToolBugReportView
-	RetroStatus string
-	BugStatus   string
-	RetroCounts map[string]int
-	BugCounts   map[string]int
-	Prefix      string
-	ProjectName string
-	ActiveBots  int
+	Retros         []*RetroEntry
+	Bugs           []*ToolBugReportView
+	RetroStatus    string
+	BugStatus      string
+	RetroCounts    map[string]int
+	BugCounts      map[string]int
+	Prefix         string
+	ProjectName    string
+	ActiveBots     int
+	SupportsGitHub bool
 }
 
 type statusUpdateResponse struct {
@@ -804,20 +817,21 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *track
 	}
 
 	data := BoardData{
-		Columns:     columns,
-		Total:       len(issues),
-		Versions:    versions,
-		Version:     versionFilter,
-		Systems:     systems,
-		System:      systemFilter,
-		Assignees:   assignees,
-		Assignee:    assigneeFilter,
-		Priorities:  priorities,
-		Labels:      labels,
-		Prefix:      prefix,
-		ProjectName: proj.Name,
-		ActiveBots:  activeBots,
-		CardFields:  wf.GetBoardCardFields(),
+		Columns:        columns,
+		Total:          len(issues),
+		Versions:       versions,
+		Version:        versionFilter,
+		Systems:        systems,
+		System:         systemFilter,
+		Assignees:      assignees,
+		Assignee:       assigneeFilter,
+		Priorities:     priorities,
+		Labels:         labels,
+		Prefix:         prefix,
+		ProjectName:    proj.Name,
+		ActiveBots:     activeBots,
+		CardFields:     wf.GetBoardCardFields(),
+		SupportsGitHub: proj.SupportsGitHub,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -923,14 +937,15 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request, proj *track
 	_, activeBots := sessionsByIssueSlug(issues)
 
 	data := GraphData{
-		Prefix:      prefix,
-		ProjectName: proj.Name,
-		ActiveBots:  activeBots,
-		StatusNodes: nodes,
-		Systems:     systems,
-		System:      systemFilter,
-		ShowDone:    showDone,
-		TotalIssues: totalIssues,
+		Prefix:         prefix,
+		ProjectName:    proj.Name,
+		ActiveBots:     activeBots,
+		StatusNodes:    nodes,
+		Systems:        systems,
+		System:         systemFilter,
+		ShowDone:       showDone,
+		TotalIssues:    totalIssues,
+		SupportsGitHub: proj.SupportsGitHub,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -997,6 +1012,7 @@ func (s *Server) handleWorkflowDesigner(w http.ResponseWriter, r *http.Request, 
 		WorkflowIssues: string(issuesJSON),
 		WorkflowSource: source,
 		WorkflowTarget: target,
+		SupportsGitHub: proj.SupportsGitHub,
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -1005,8 +1021,9 @@ func (s *Server) handleWorkflowDesigner(w http.ResponseWriter, r *http.Request, 
 func (s *Server) handleWorkflowFlow(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "workflow-flow.html", WorkflowFlowData{
-		Prefix:      prefix,
-		ProjectName: proj.Name,
+		Prefix:         prefix,
+		ProjectName:    proj.Name,
+		SupportsGitHub: proj.SupportsGitHub,
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -1048,15 +1065,16 @@ func (s *Server) handleRetros(w http.ResponseWriter, r *http.Request, proj *trac
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.ExecuteTemplate(w, "retros.html", RetrosData{
-		Retros:      retros,
-		Bugs:        bugs,
-		RetroStatus: retroStatus,
-		BugStatus:   bugStatus,
-		RetroCounts: retroCounts,
-		BugCounts:   bugCounts,
-		Prefix:      prefix,
-		ProjectName: proj.Name,
-		ActiveBots:  activeBots,
+		Retros:         retros,
+		Bugs:           bugs,
+		RetroStatus:    retroStatus,
+		BugStatus:      bugStatus,
+		RetroCounts:    retroCounts,
+		BugCounts:      bugCounts,
+		Prefix:         prefix,
+		ProjectName:    proj.Name,
+		ActiveBots:     activeBots,
+		SupportsGitHub: proj.SupportsGitHub,
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -1615,11 +1633,12 @@ func fileExists(path string) bool {
 // --- Docs ---
 
 type DocsData struct {
-	Page        *tracker.DocPage
-	Pages       []*tracker.DocPage
-	Sections    []tracker.DocSection
-	Prefix      string
-	ProjectName string
+	Page           *tracker.DocPage
+	Pages          []*tracker.DocPage
+	Sections       []tracker.DocSection
+	Prefix         string
+	ProjectName    string
+	SupportsGitHub bool
 }
 
 func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
@@ -1636,7 +1655,7 @@ func (s *Server) handleDocs(w http.ResponseWriter, r *http.Request, proj *tracke
 
 	sections := tracker.GroupDocSections(pages)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tmpl.ExecuteTemplate(w, "docs.html", DocsData{Pages: pages, Sections: sections, Prefix: prefix, ProjectName: proj.Name}); err != nil {
+	if err := s.tmpl.ExecuteTemplate(w, "docs.html", DocsData{Pages: pages, Sections: sections, Prefix: prefix, ProjectName: proj.Name, SupportsGitHub: proj.SupportsGitHub}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -1669,7 +1688,7 @@ func (s *Server) handleDocPage(w http.ResponseWriter, r *http.Request, proj *tra
 
 	sections := tracker.GroupDocSections(pages)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tmpl.ExecuteTemplate(w, "docs.html", DocsData{Page: found, Pages: pages, Sections: sections, Prefix: prefix, ProjectName: proj.Name}); err != nil {
+	if err := s.tmpl.ExecuteTemplate(w, "docs.html", DocsData{Page: found, Pages: pages, Sections: sections, Prefix: prefix, ProjectName: proj.Name, SupportsGitHub: proj.SupportsGitHub}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -1713,7 +1732,7 @@ func (s *Server) handleUpdateIssue(w http.ResponseWriter, r *http.Request, proj 
 		return
 	}
 
-	if update.Status != nil && *update.Status == "done" && found.Repo != "" && found.Number > 0 {
+	if update.Status != nil && *update.Status == "done" && proj.SupportsGitHub && found.Repo != "" && found.Number > 0 {
 		go closeGithubIssue(found)
 	}
 
@@ -2879,4 +2898,124 @@ func defaultListTmuxSessions() []AgentSession {
 		sessions = append(sessions, session)
 	}
 	return sessions
+}
+
+// --- GitHub integration ---
+
+type GitHubPageData struct {
+	Prefix         string
+	ProjectName    string
+	Repo           string
+	ActiveBots     int
+	SupportsGitHub bool
+}
+
+func (s *Server) handleGitHub(w http.ResponseWriter, r *http.Request, proj *tracker.Project, prefix string) {
+	if !proj.SupportsGitHub {
+		http.NotFound(w, r)
+		return
+	}
+	issues, _ := tracker.LoadIssues(proj.IssueDir)
+	_, activeBots := sessionsByIssueSlug(issues)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.tmpl.ExecuteTemplate(w, "github.html", GitHubPageData{
+		Prefix:         prefix,
+		ProjectName:    proj.Name,
+		Repo:           proj.Repo,
+		ActiveBots:     activeBots,
+		SupportsGitHub: proj.SupportsGitHub,
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func (s *Server) handleGitHubFetch(w http.ResponseWriter, r *http.Request, proj *tracker.Project) {
+	if !proj.SupportsGitHub {
+		http.NotFound(w, r)
+		return
+	}
+	if proj.Repo == "" {
+		http.Error(w, "project has no `repo` configured", http.StatusBadRequest)
+		return
+	}
+	remote, err := FetchGitHubIssues(proj.Repo)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	local, err := LocalIssueNumbers(proj)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for i := range remote {
+		remote[i].Imported = local[remote[i].Number]
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"repo":   proj.Repo,
+		"issues": remote,
+	})
+}
+
+func (s *Server) handleGitHubImport(w http.ResponseWriter, r *http.Request, proj *tracker.Project) {
+	if !proj.SupportsGitHub {
+		http.NotFound(w, r)
+		return
+	}
+	if proj.Repo == "" {
+		http.Error(w, "project has no `repo` configured", http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		Numbers []int `json:"numbers"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(req.Numbers) == 0 {
+		http.Error(w, "no issues selected", http.StatusBadRequest)
+		return
+	}
+
+	remote, err := FetchGitHubIssues(proj.Repo)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	byNum := make(map[int]GitHubIssue, len(remote))
+	for _, iss := range remote {
+		byNum[iss.Number] = iss
+	}
+
+	type result struct {
+		Number int    `json:"number"`
+		OK     bool   `json:"ok"`
+		Path   string `json:"path,omitempty"`
+		Error  string `json:"error,omitempty"`
+	}
+	results := make([]result, 0, len(req.Numbers))
+	imported := 0
+	for _, n := range req.Numbers {
+		iss, ok := byNum[n]
+		if !ok {
+			results = append(results, result{Number: n, OK: false, Error: "not found on remote"})
+			continue
+		}
+		path, err := ImportGitHubIssue(proj, iss)
+		if err != nil {
+			results = append(results, result{Number: n, OK: false, Error: err.Error()})
+			continue
+		}
+		imported++
+		results = append(results, result{Number: n, OK: true, Path: path})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"imported": imported,
+		"results":  results,
+	})
 }
