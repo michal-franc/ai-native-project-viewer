@@ -108,11 +108,14 @@
                         <a href="{{$.Prefix}}/issue/{{.Slug}}?from=board{{if $.Version}}%3Fversion%3D{{$.Version}}{{end}}" class="board-card{{if .HasActiveAgent}} board-card-agent-active{{end}}" draggable="true" data-slug="{{.Slug}}">
                             <div class="board-card-id">
                                 <span class="board-card-dot" style="border-color:{{statusColor .Status}}"></span>
-                                {{if .System}}<span class="board-card-system">{{.System}}</span>{{end}}
-                                {{if .Labels}}
-                                <div class="board-card-labels">
-                                    {{range .Labels}}<span class="board-label">{{.}}</span>{{end}}
-                                </div>
+                                {{range boardCardFields $.CardFields .}}
+                                    {{if .IsList}}
+                                    <div class="board-card-labels">
+                                        {{range .Values}}<span class="board-label">{{.}}</span>{{end}}
+                                    </div>
+                                    {{else}}
+                                    <span class="board-card-system">{{.Value}}</span>
+                                    {{end}}
                                 {{end}}
                             </div>
                             <div class="board-card-title">{{.Title}}</div>

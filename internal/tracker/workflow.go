@@ -41,10 +41,32 @@ type WorkflowOverlay struct {
 	Transitions []WorkflowTransition `yaml:"transitions"`
 }
 
+type WorkflowBoardConfig struct {
+	CardFields []string `yaml:"card_fields"`
+	Columns    []string `yaml:"columns"`
+}
+
 type WorkflowConfig struct {
 	Statuses    []WorkflowStatus           `yaml:"statuses"`
 	Transitions []WorkflowTransition       `yaml:"transitions"`
 	Systems     map[string]WorkflowOverlay `yaml:"systems"`
+	Board       WorkflowBoardConfig        `yaml:"board"`
+}
+
+var defaultBoardCardFields = []string{"system", "labels"}
+
+func (w *WorkflowConfig) GetBoardCardFields() []string {
+	if len(w.Board.CardFields) > 0 {
+		return w.Board.CardFields
+	}
+	return defaultBoardCardFields
+}
+
+func (w *WorkflowConfig) GetBoardColumns() []string {
+	if len(w.Board.Columns) > 0 {
+		return w.Board.Columns
+	}
+	return w.GetStatusOrder()
 }
 
 type TransitionResult struct {

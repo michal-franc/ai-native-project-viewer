@@ -1,3 +1,19 @@
+board:
+  columns:
+    - idea
+    - in design
+    - backlog
+    - in progress
+    - testing
+    - human-testing
+    - documentation
+    - done
+  card_fields:
+    - system
+    - labels
+    - priority
+    - assignee
+
 statuses:
   - name: "idea"
     description: "Raw idea, needs exploration"

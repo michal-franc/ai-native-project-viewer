@@ -118,6 +118,38 @@ var funcMap = template.FuncMap{
 		}
 		return colors[h%len(colors)]
 	},
+	"boardCardFields": func(fields []string, issue *IssueView) []BoardCardField {
+		var result []BoardCardField
+		for _, f := range fields {
+			switch f {
+			case "system":
+				if issue.System != "" {
+					result = append(result, BoardCardField{Name: f, Value: issue.System})
+				}
+			case "labels":
+				if len(issue.Labels) > 0 {
+					result = append(result, BoardCardField{Name: f, Values: issue.Labels, IsList: true})
+				}
+			case "priority":
+				if issue.Priority != "" {
+					result = append(result, BoardCardField{Name: f, Value: issue.Priority})
+				}
+			case "assignee":
+				if issue.Assignee != "" {
+					result = append(result, BoardCardField{Name: f, Value: issue.Assignee})
+				}
+			case "version":
+				if issue.Version != "" {
+					result = append(result, BoardCardField{Name: f, Value: issue.Version})
+				}
+			case "number":
+				if issue.Number > 0 {
+					result = append(result, BoardCardField{Name: f, Value: fmt.Sprintf("#%d", issue.Number)})
+				}
+			}
+		}
+		return result
+	},
 	"linkIssueRefs": func(html string, prefix string, slugMap map[string]string) template.HTML {
 		// Match #123, #my-slug, #system/my-slug
 		re := regexp.MustCompile(`#([a-zA-Z0-9][\w/.-]*)`)
@@ -536,6 +568,13 @@ type BoardColumn struct {
 	Issues      []*IssueView
 }
 
+type BoardCardField struct {
+	Name   string
+	Value  string
+	Values []string
+	IsList bool
+}
+
 type BoardData struct {
 	Columns     []*BoardColumn
 	Total       int
@@ -550,6 +589,7 @@ type BoardData struct {
 	Prefix      string
 	ProjectName string
 	ActiveBots  int
+	CardFields  []string
 }
 
 type WorkflowDesignerData struct {
@@ -688,7 +728,7 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *track
 	issues = filtered
 
 	wf := proj.LoadWorkflow()
-	statusOrder := wf.GetStatusOrder()
+	statusOrder := wf.GetBoardColumns()
 	statusDescs := wf.GetStatusDescriptions()
 	sessionMap, activeBots := sessionsByIssueSlug(issues)
 
@@ -730,6 +770,7 @@ func (s *Server) handleBoard(w http.ResponseWriter, r *http.Request, proj *track
 		Prefix:      prefix,
 		ProjectName: proj.Name,
 		ActiveBots:  activeBots,
+		CardFields:  wf.GetBoardCardFields(),
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

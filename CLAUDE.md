@@ -136,10 +136,53 @@ Side-effects are declarative in `workflow.yaml` or the default config:
   side_effects: [clear_assignee]
 ```
 
+## Board Configuration
+
+The `board` section in `workflow.yaml` controls the kanban layout.
+
+### Columns (swimlanes)
+
+`board.columns` sets which statuses appear as columns and in what order. Only listed statuses are shown — unlisted ones are hidden even if issues carry that status:
+
+```yaml
+board:
+  columns:
+    - backlog
+    - in progress
+    - testing
+    - done
+```
+
+If omitted, all statuses defined in `statuses:` are shown in their declared order.
+
+### Card fields
+
+`board.card_fields` sets which issue fields appear on each card and in what order:
+
+```yaml
+board:
+  card_fields:
+    - system
+    - labels
+    - priority
+    - assignee
+```
+
+Supported field names: `system`, `labels`, `priority`, `assignee`, `version`, `number`.
+
+If omitted, defaults to `[system, labels]`.
+
+## GitHub Issue Reference
+
+Issues can link back to a GitHub issue via `number` and `repo` frontmatter fields:
+
+```yaml
+number: 42
+repo: "owner/repo"
+```
+
+When both are set, the detail view sidebar shows a clickable link to `https://github.com/owner/repo/issues/42`. When the issue is marked `done`, the GitHub issue is automatically closed with a comment.
+
 ## Adding New Statuses
 
-Status colors and board column order are defined in `handlers.go`:
-
-- `statusOrder` — column display order on the board
-- `statusDescriptions` — subtitle text under each column header
-- `statusColor` template function in `funcMap` — badge/dot colors
+Status colors are defined in the `statusColor` template function in `handlers.go` `funcMap`. Board column order and descriptions come from `workflow.yaml` statuses.

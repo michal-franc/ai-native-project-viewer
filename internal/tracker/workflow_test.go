@@ -1012,6 +1012,82 @@ func TestEntryPrompts(t *testing.T) {
 	}
 }
 
+func TestGetBoardColumns_ConfiguredReturnsInOrder(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "idea"},
+			{Name: "backlog"},
+			{Name: "in progress"},
+			{Name: "done"},
+		},
+		Board: WorkflowBoardConfig{
+			Columns: []string{"in progress", "backlog", "done"},
+		},
+	}
+	got := wf.GetBoardColumns()
+	want := []string{"in progress", "backlog", "done"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("index %d: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestGetBoardColumns_FallsBackToAllStatuses(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "idea"},
+			{Name: "backlog"},
+			{Name: "done"},
+		},
+	}
+	got := wf.GetBoardColumns()
+	want := []string{"idea", "backlog", "done"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("index %d: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestGetBoardCardFields_ConfiguredReturnsInOrder(t *testing.T) {
+	wf := &WorkflowConfig{
+		Board: WorkflowBoardConfig{
+			CardFields: []string{"priority", "system", "labels"},
+		},
+	}
+	got := wf.GetBoardCardFields()
+	want := []string{"priority", "system", "labels"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("index %d: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestGetBoardCardFields_FallsBackToDefault(t *testing.T) {
+	wf := &WorkflowConfig{}
+	got := wf.GetBoardCardFields()
+	want := defaultBoardCardFields
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("index %d: got %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestLoadWorkflow_InvalidFile(t *testing.T) {
 	_, err := LoadWorkflow("/nonexistent/path/workflow.yaml")
 	if err == nil {
