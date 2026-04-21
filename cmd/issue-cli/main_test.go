@@ -303,6 +303,61 @@ system: "CLI"
 	}
 }
 
+func TestRunSetMetaSetsAndClears(t *testing.T) {
+	dir := t.TempDir()
+	issuesDir := filepath.Join(dir, "issues")
+	systemDir := filepath.Join(issuesDir, "CLI")
+	if err := os.MkdirAll(systemDir, 0755); err != nil {
+		t.Fatalf("mkdir issue dir: %v", err)
+	}
+
+	issuePath := filepath.Join(systemDir, "sample.md")
+	issue := strings.TrimSpace(`
+---
+title: "sample"
+status: "in progress"
+system: "CLI"
+---
+
+Body
+`)
+	if err := os.WriteFile(issuePath, []byte(issue), 0644); err != nil {
+		t.Fatalf("write issue: %v", err)
+	}
+
+	proj := &tracker.Project{Name: "test", Slug: "test", IssueDir: issuesDir}
+	jsonOutput = false
+
+	output := captureStdout(t, func() {
+		runSetMeta(proj, "cli/sample", "waiting", "design review", false)
+	})
+	assertContains(t, output, `✓ Set waiting = "design review"`)
+	assertContains(t, output, "file: "+issuePath)
+
+	got := loadIssueByPath(t, issuesDir, issuePath)
+	var waiting string
+	for _, ef := range got.ExtraFields {
+		if ef.Key == "waiting" {
+			waiting = ef.Value
+		}
+	}
+	if waiting != "design review" {
+		t.Fatalf("waiting = %q, want %q", waiting, "design review")
+	}
+
+	clearOutput := captureStdout(t, func() {
+		runSetMeta(proj, "cli/sample", "waiting", "", true)
+	})
+	assertContains(t, clearOutput, "✓ Cleared waiting")
+
+	got = loadIssueByPath(t, issuesDir, issuePath)
+	for _, ef := range got.ExtraFields {
+		if ef.Key == "waiting" {
+			t.Fatalf("waiting field still present after clear: %+v", ef)
+		}
+	}
+}
+
 func makeTransitionFixture(t *testing.T) (*tracker.Project, string) {
 	t.Helper()
 

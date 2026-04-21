@@ -58,6 +58,7 @@ var funcMap = template.FuncMap{
 			"testing":       "#f97316",
 			"human-testing": "#ec4899",
 			"documentation": "#14b8a6",
+			"shipping":      "#0ea5e9",
 			"done":          "#22c55e",
 		}
 		if c, ok := colors[canonicalStatusKey(s)]; ok {

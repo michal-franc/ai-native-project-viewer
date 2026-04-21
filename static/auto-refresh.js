@@ -11,7 +11,7 @@
     var statusColors = {
         'idea': '#8b5cf6', 'in design': '#3b82f6', 'backlog': '#64748b',
         'in progress': '#eab308', 'testing': '#f97316', 'human-testing': '#ec4899',
-        'documentation': '#14b8a6', 'done': '#22c55e'
+        'documentation': '#14b8a6', 'shipping': '#0ea5e9', 'done': '#22c55e'
     };
     var statusTextColors = { 'in progress': '#000000', 'testing': '#000000', 'human-testing': '#000000' };
     var priorityColors = { 'low': '#6b7280', 'medium': '#3b82f6', 'high': '#f97316', 'critical': '#ef4444' };

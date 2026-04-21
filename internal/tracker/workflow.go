@@ -153,6 +153,11 @@ func DefaultWorkflow() *WorkflowConfig {
 				Prompt:      "Update the relevant docs for the change and record the documentation work clearly.",
 			},
 			{
+				Name:        "shipping",
+				Description: "Committing and pushing changes",
+				Prompt:      "Commit the changes with a message referencing the issue, push the commit to the remote, and note a PR link if one is opened.\nStop and ask for `done` approval in the issue viewer once the commit is pushed.",
+			},
+			{
 				Name:        "done",
 				Description: "Completed",
 			},
@@ -219,10 +224,18 @@ func DefaultWorkflow() *WorkflowConfig {
 			},
 			{
 				From: "documentation",
-				To:   "done",
+				To:   "shipping",
 				Actions: []WorkflowAction{
 					{Type: "validate", Rule: "section_checkboxes_checked: Documentation"},
 					{Type: "validate", Rule: "has_comment_prefix: docs:"},
+					{Type: "append_section", Title: "Shipping", Body: "- [ ] Changes committed with a message referencing the issue\n- [ ] Commit pushed to the remote\n- [ ] PR opened if applicable"},
+				},
+			},
+			{
+				From: "shipping",
+				To:   "done",
+				Actions: []WorkflowAction{
+					{Type: "validate", Rule: "section_checkboxes_checked: Shipping"},
 					{Type: "require_human_approval", Status: "done"},
 				},
 			},

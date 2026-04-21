@@ -32,7 +32,7 @@ func TestGetStatusOrder(t *testing.T) {
 	wf := DefaultWorkflow()
 	order := wf.GetStatusOrder()
 
-	expected := []string{"idea", "in design", "backlog", "in progress", "testing", "human-testing", "documentation", "done"}
+	expected := []string{"idea", "in design", "backlog", "in progress", "testing", "human-testing", "documentation", "shipping", "done"}
 	if len(order) != len(expected) {
 		t.Fatalf("got %d statuses, want %d", len(order), len(expected))
 	}
@@ -53,7 +53,8 @@ func TestGetStatusIndex(t *testing.T) {
 		{"idea", 0},
 		{"in design", 1},
 		{"human-testing", 5},
-		{"done", 7},
+		{"shipping", 7},
+		{"done", 8},
 		{"none", -1},
 		{"unknown", -1},
 	}
@@ -84,7 +85,9 @@ func TestIsValidTransition(t *testing.T) {
 		{"none", "idea", false},    // none no longer exists
 		{"testing", "human-testing", true},
 		{"human-testing", "documentation", true},
-		{"documentation", "done", true},
+		{"documentation", "shipping", true},
+		{"shipping", "done", true},
+		{"documentation", "done", false}, // shipping must come first
 	}
 
 	for _, tt := range tests {
@@ -551,30 +554,37 @@ func TestValidate(t *testing.T) {
 		}
 	})
 
-	t.Run("has_comment_prefix docs: passes for done", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "content", HumanApproval: "done"}
+	t.Run("has_comment_prefix docs: passes for shipping", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "## Documentation\n- [x] docs updated"}
 		comments := []Comment{{Text: "docs: updated docs"}}
-		err := wf.Validate(issue, "done", comments)
+		err := wf.Validate(issue, "shipping", comments)
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
-	t.Run("has_comment_prefix docs: fails for done", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "content", HumanApproval: "done"}
+	t.Run("has_comment_prefix docs: fails for shipping", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "## Documentation\n- [x] docs updated"}
 		comments := []Comment{{Text: "some other comment"}}
-		err := wf.Validate(issue, "done", comments)
+		err := wf.Validate(issue, "shipping", comments)
 		if err == nil {
 			t.Fatal("expected error")
 		}
 	})
 
 	t.Run("done requires approval", func(t *testing.T) {
-		issue := &Issue{BodyRaw: "content"}
-		comments := []Comment{{Text: "docs: updated docs"}}
-		err := wf.Validate(issue, "done", comments)
+		issue := &Issue{BodyRaw: "## Shipping\n- [x] committed\n- [x] pushed\n- [x] pr"}
+		err := wf.Validate(issue, "done", nil)
 		if err == nil {
 			t.Fatal("expected error for missing approval")
+		}
+	})
+
+	t.Run("done passes with approval and checked shipping", func(t *testing.T) {
+		issue := &Issue{BodyRaw: "## Shipping\n- [x] committed\n- [x] pushed\n- [x] pr", HumanApproval: "done"}
+		err := wf.Validate(issue, "done", nil)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
 		}
 	})
 
@@ -800,18 +810,15 @@ func TestMarkIssueDoneOnce_RejectsSecondRun(t *testing.T) {
 	fp := filepath.Join(dir, "issue.md")
 	content := `---
 title: "Sample"
-status: "documentation"
+status: "shipping"
 assignee: "alice"
 human_approval: "done"
 ---
 
-## Documentation
-- [x] User-facing docs updated if behavior changed
-- [x] docs: comment prepared with the documentation changes
-
-<!-- issue-viewer-comments
-{"id":1,"block":0,"date":"2025-01-15","text":"docs: updated docs","status":"open","source":"cli"}
--->
+## Shipping
+- [x] Changes committed with a message referencing the issue
+- [x] Commit pushed to the remote
+- [x] PR opened if applicable
 `
 	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
 		t.Fatalf("write issue: %v", err)
@@ -961,7 +968,8 @@ func TestNextStatus(t *testing.T) {
 		{"idea", "in design"},
 		{"testing", "human-testing"},
 		{"human-testing", "documentation"},
-		{"documentation", "done"},
+		{"documentation", "shipping"},
+		{"shipping", "done"},
 		{"done", ""},
 		{"none", ""},
 		{"unknown", ""},

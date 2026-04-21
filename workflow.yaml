@@ -7,6 +7,7 @@ board:
     - testing
     - human-testing
     - documentation
+    - shipping
     - done
   card_fields:
     - system
@@ -51,6 +52,11 @@ statuses:
     description: "Being documented"
     prompt: |
       Update the relevant docs for the change and record the documentation work clearly.
+  - name: "shipping"
+    description: "Committing and pushing changes"
+    prompt: |
+      Commit the changes with a message referencing the issue, push the commit to the remote, and note a PR link if one is opened.
+      Stop and ask for `done` approval in the issue viewer once the commit is pushed.
   - name: "done"
     description: "Completed"
 
@@ -151,12 +157,23 @@ transitions:
           - [ ] User-facing docs updated if behavior changed
           - [ ] Docs comment added (`issue-cli comment <slug> --text "docs: ..."`)
   - from: "documentation"
-    to: "done"
+    to: "shipping"
     actions:
       - type: "validate"
         rule: "section_checkboxes_checked: Documentation"
       - type: "validate"
         rule: "has_comment_prefix: docs:"
+      - type: "append_section"
+        title: "Shipping"
+        body: |
+          - [ ] Changes committed with a message referencing the issue
+          - [ ] Commit pushed to the remote
+          - [ ] PR opened if applicable
+  - from: "shipping"
+    to: "done"
+    actions:
+      - type: "validate"
+        rule: "section_checkboxes_checked: Shipping"
       - type: "require_human_approval"
         status: "done"
 

@@ -39,6 +39,12 @@ statuses:
     prompt: |
       Update the relevant docs for the change and record the documentation work clearly.
 
+  - name: "shipping"
+    description: "Commit, push, and open a PR"
+    prompt: |
+      Commit the changes with a message referencing the issue, push to the remote, and (if applicable) open a PR.
+      Tick the Shipping checklist as each step completes, then request human approval before marking done.
+
   - name: "done"
     description: "Completed"
 
@@ -58,6 +64,7 @@ board:
     - testing
     - human-testing
     - documentation
+    - shipping
     - done
   card_fields:
     - system
@@ -159,10 +166,22 @@ transitions:
           - [ ] Docs comment added (`issue-cli comment <slug> --text "docs: ..."`)
 
   - from: "documentation"
-    to: "done"
+    to: "shipping"
     actions:
       - type: "validate"
         rule: "has_comment_prefix: docs:"
+      - type: "append_section"
+        title: "Shipping"
+        body: |
+          - [ ] Changes committed with a message referencing the issue
+          - [ ] Commit pushed to the remote
+          - [ ] PR opened if applicable
+
+  - from: "shipping"
+    to: "done"
+    actions:
+      - type: "validate"
+        rule: "section_checkboxes_checked: Shipping"
       - type: "require_human_approval"
         status: "done"
 

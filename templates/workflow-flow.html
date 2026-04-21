@@ -39,6 +39,7 @@
         .marker-testing { background: linear-gradient(160deg, #f97316, #ef4444); }
         .marker-human { background: linear-gradient(160deg, #ec4899, #d946ef); }
         .marker-docs { background: linear-gradient(160deg, #14b8a6, #06b6d4); }
+        .marker-shipping { background: linear-gradient(160deg, #0ea5e9, #2563eb); }
         .marker-done { background: linear-gradient(160deg, #22c55e, #10b981); }
         @media (max-width: 980px) {
             .flow-shell { grid-template-columns: 1fr; }
@@ -226,7 +227,20 @@
                         <ul class="flow-list">
                             <li>Subsystem overlays point the agent at concrete doc areas such as `docs/combat/`, `docs/ui/`, or `docs/data/`.</li>
                             <li>The bot records doc work with a `docs:` comment.</li>
-                            <li>`documentation -> done` stays mechanical once docs are complete.</li>
+                            <li>`documentation -> shipping` appends a Shipping checklist for commit/push/PR work.</li>
+                        </ul>
+                    </div>
+                </section>
+
+                <section class="flow-step">
+                    <div class="flow-marker marker-shipping">SHIP</div>
+                    <div class="flow-card">
+                        <div class="flow-type">Shipping</div>
+                        <h3>Commit, push, and open a PR</h3>
+                        <p>Shipping is the final mechanical gate before `done`. The bot ticks the Shipping checklist as it commits, pushes, and (if applicable) opens a PR referencing the issue.</p>
+                        <ul class="flow-list">
+                            <li>All Shipping checkboxes must be checked before `done`.</li>
+                            <li>`shipping -> done` also requires human approval so someone confirms the change is live.</li>
                         </ul>
                     </div>
                 </section>

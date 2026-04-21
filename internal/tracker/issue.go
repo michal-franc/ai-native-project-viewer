@@ -72,7 +72,7 @@ func extractExtraFields(rawMap map[string]interface{}) []ExtraField {
 
 // StatusOrder defines the workflow lifecycle.
 var StatusOrder = []string{
-	"idea", "in design", "backlog", "in progress", "testing", "human-testing", "documentation", "done",
+	"idea", "in design", "backlog", "in progress", "testing", "human-testing", "documentation", "shipping", "done",
 }
 
 var StatusDescriptions = map[string]string{
@@ -83,6 +83,7 @@ var StatusDescriptions = map[string]string{
 	"testing":       "Under verification",
 	"human-testing": "Manual verification by humans",
 	"documentation": "Being documented",
+	"shipping":      "Committing and pushing changes",
 	"done":          "Completed",
 }
 
@@ -544,6 +545,99 @@ func updateIssueFrontmatterLocked(filePath string, update IssueUpdate) error {
 func UpdateIssueFrontmatter(filePath string, update IssueUpdate) error {
 	return withIssueLock(filePath, func() error {
 		return updateIssueFrontmatterLocked(filePath, update)
+	})
+}
+
+// ProtectedFrontmatterFields lists keys that SetFrontmatterField refuses to touch
+// because they are managed elsewhere (workflow transitions, claim/start, GitHub sync).
+var ProtectedFrontmatterFields = map[string]bool{
+	"title":          true,
+	"status":         true,
+	"human_approval": true,
+	"approved_for":   true,
+	"started_at":     true,
+	"done_at":        true,
+	"number":         true,
+	"repo":           true,
+	"created":        true,
+	"labels":         true,
+}
+
+var frontmatterKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+func escapeYAMLScalar(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return s
+}
+
+func setFrontmatterScalar(fm, key, value string) string {
+	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:.*$`)
+	newLine := key + `: "` + escapeYAMLScalar(value) + `"`
+	if re.MatchString(fm) {
+		return re.ReplaceAllString(fm, newLine)
+	}
+	return strings.TrimRight(fm, "\n") + "\n" + newLine + "\n"
+}
+
+func removeFrontmatterKey(fm, key string) string {
+	re := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:.*\n?`)
+	fm = re.ReplaceAllString(fm, "")
+	reList := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(key) + `:\s*\n([ \t]+-[^\n]*\n?)*`)
+	fm = reList.ReplaceAllString(fm, "")
+	return fm
+}
+
+// SetFrontmatterField writes or clears a single scalar frontmatter key.
+// Protected keys (see ProtectedFrontmatterFields) are refused. Pass clear=true
+// to remove the field; value is ignored in that case.
+func SetFrontmatterField(filePath, key, value string, clear bool) error {
+	if key == "" {
+		return fmt.Errorf("key is required")
+	}
+	if !frontmatterKeyRe.MatchString(key) {
+		return fmt.Errorf("invalid key %q: must start with a lowercase letter and contain only lowercase letters, digits, or underscores", key)
+	}
+	if ProtectedFrontmatterFields[key] {
+		return fmt.Errorf("field %q is managed by the workflow and cannot be set via set-meta", key)
+	}
+
+	return withIssueLock(filePath, func() error {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", filePath, err)
+		}
+
+		content := string(data)
+		if !strings.HasPrefix(content, "---") {
+			return fmt.Errorf("no frontmatter in %s", filePath)
+		}
+
+		parts := strings.SplitN(content[3:], "---", 2)
+		if len(parts) < 2 {
+			return fmt.Errorf("invalid frontmatter in %s", filePath)
+		}
+
+		fmRaw := parts[0]
+		body := parts[1]
+
+		if clear {
+			fmRaw = removeFrontmatterKey(fmRaw, key)
+		} else {
+			fmRaw = setFrontmatterScalar(fmRaw, key, value)
+		}
+
+		var out strings.Builder
+		out.WriteString("---")
+		out.WriteString(fmRaw)
+		out.WriteString("\n---")
+		out.WriteString(body)
+
+		info, err := os.Stat(filePath)
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", filePath, err)
+		}
+		return writeFileAtomically(filePath, []byte(out.String()), info.Mode().Perm())
 	})
 }
 

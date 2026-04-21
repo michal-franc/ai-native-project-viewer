@@ -231,9 +231,14 @@ code { background: var(--bg-t); padding: 2px 6px; border-radius: 4px; font-size:
             <td>Test plan with automated + manual sections, plus logged results</td>
         </tr>
         <tr>
-            <td>documentation &rarr; done</td>
+            <td>documentation &rarr; shipping</td>
             <td><span class="tag tag-gate">all_checkboxes_checked</span> <span class="tag tag-gate">comment: docs:</span></td>
             <td>Docs must be updated and logged before shipping</td>
+        </tr>
+        <tr>
+            <td>shipping &rarr; done</td>
+            <td><span class="tag tag-gate">all_checkboxes_checked</span> <span class="tag tag-gate">human approval</span></td>
+            <td>Commit, push, and (if applicable) open a PR; human confirms before done</td>
         </tr>
     </tbody>
 </table>

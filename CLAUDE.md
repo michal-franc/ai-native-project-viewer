@@ -54,7 +54,7 @@ Markdown body here. Supports `[x]` checkboxes.
 
 ### Optional fields
 
-- `status` — one of: `idea`, `in design`, `backlog`, `in progress`, `testing`, `documentation`, `done`, `none`
+- `status` — one of: `idea`, `in design`, `backlog`, `in progress`, `testing`, `human-testing`, `documentation`, `shipping`, `done`, `none`
 - `system` — categorization tag (also used as subdirectory name by sync script)
 - `version` — version string, filterable on the board view
 - `labels` — list of label strings

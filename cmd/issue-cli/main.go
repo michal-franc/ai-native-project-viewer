@@ -224,6 +224,22 @@ func main() {
 		requireArg(cmdArgs, "update", "<slug>")
 		proj := loadProject(configPath, projectSlug)
 		runUpdate(proj, cmdArgs[0], cmdArgs[1:])
+	case "set-meta":
+		requireArg(cmdArgs, "set-meta", "<slug>")
+		key := flagValue(cmdArgs[1:], "--key")
+		value := textFlagValue(cmdArgs[1:], "--value")
+		clear := hasFlag(cmdArgs[1:], "--clear")
+		if key == "" {
+			fatal("set-meta requires --key\n\nExamples:\n  issue-cli set-meta %s --key waiting --value \"waiting on design review\"\n  issue-cli set-meta %s --key waiting --clear", cmdArgs[0], cmdArgs[0])
+		}
+		if clear && value != "" {
+			fatal("set-meta: --value and --clear are mutually exclusive")
+		}
+		if !clear && value == "" {
+			fatal("set-meta requires --value or --clear\n\nExamples:\n  issue-cli set-meta %s --key waiting --value \"...\"\n  issue-cli set-meta %s --key waiting --clear", cmdArgs[0], cmdArgs[0])
+		}
+		proj := loadProject(configPath, projectSlug)
+		runSetMeta(proj, cmdArgs[0], key, value, clear)
 	case "stats":
 		proj := loadProject(configPath, projectSlug)
 		runStats(proj)
@@ -537,6 +553,7 @@ Commands:
   list                 List issues with filters (--status open|closed|<name>)
   search <query>       Search issues (supports regex, e.g. "foo|bar")
   update <slug>        Replace issue body (--body "content"), preserves frontmatter
+  set-meta <slug>      Set/clear a frontmatter field (--key <k> --value "v" | --clear)
   append <slug>        Append content to issue body (--body "...", or --section "X" --body "...")
   retrospective <slug> Save workflow feedback under retros/ in the project
   stats                Project health overview
@@ -564,7 +581,7 @@ Issues are .md files in issues/<System>/ directories.
 
 == Workflow ==
 Every issue follows this lifecycle:
-  idea → in design → backlog → in progress → testing → human-testing → documentation → done
+  idea → in design → backlog → in progress → testing → human-testing → documentation → shipping → done
 
 == What each status means ==
   idea           Raw concept, just a title and rough description
@@ -574,6 +591,7 @@ Every issue follows this lifecycle:
   testing        Implementation done, verifying correctness
   human-testing  Manual verification by humans
   documentation  Updating docs to reflect the change
+  shipping       Committing and pushing the changes
   done           Shipped, tested, documented
 
 == Rules ==
@@ -606,7 +624,9 @@ Every issue follows this lifecycle:
   7. Log test results: issue-cli comment <slug> --text "tests: ..."
   8. issue-cli transition <slug> --to "documentation"
   9. Update docs: issue-cli comment <slug> --text "docs: ..."
-  10. issue-cli done <slug>
+  10. issue-cli transition <slug> --to "shipping"
+  11. Commit and push the changes; check off the Shipping section
+  12. issue-cli done <slug>
 
 == Quick start ==
   issue-cli next --version 0.1    — find work for version 0.1
@@ -649,7 +669,10 @@ Run 'issue-cli process <topic>' for details:
   testing → human-testing     Must have ## Test Plan with ### Automated and ### Manual
                                Must have a test results comment
   human-testing → documentation  Manual verification by humans
-  documentation → done        Must have a "docs:" comment
+  documentation → shipping    Section checkboxes must be checked (## Documentation)
+                               Must have a "docs:" comment
+  shipping → done             Section checkboxes must be checked (## Shipping)
+                               Must be human-approved in the issue viewer
 
 Transitions are strict — you cannot skip statuses.
 `)
@@ -1318,6 +1341,19 @@ func runUpdate(proj *tracker.Project, slug string, args []string) {
 	}
 
 	fmt.Printf("✓ Updated: %s\n", issue.Slug)
+	fmt.Printf("file: %s\n", issue.FilePath)
+}
+
+func runSetMeta(proj *tracker.Project, slug, key, value string, clear bool) {
+	issue, _ := findIssue(proj, slug)
+	if err := tracker.SetFrontmatterField(issue.FilePath, key, value, clear); err != nil {
+		fatal("Failed to set frontmatter: %v", err)
+	}
+	if clear {
+		fmt.Printf("✓ Cleared %s on %s\n", key, issue.Slug)
+	} else {
+		fmt.Printf("✓ Set %s = %q on %s\n", key, value, issue.Slug)
+	}
 	fmt.Printf("file: %s\n", issue.FilePath)
 }
 

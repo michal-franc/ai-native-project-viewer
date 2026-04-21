@@ -587,6 +587,169 @@ Body.
 	}
 }
 
+func TestSetFrontmatterField_AddsNewKey(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "test.md")
+	os.WriteFile(fp, []byte(`---
+title: "Test"
+status: "in progress"
+---
+
+Body.
+`), 0644)
+
+	if err := SetFrontmatterField(fp, "waiting", "design review", false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, _ := os.ReadFile(fp)
+	content := string(data)
+	if !strings.Contains(content, `waiting: "design review"`) {
+		t.Errorf("waiting field not written:\n%s", content)
+	}
+	issue, err := ParseIssue("test.md", data)
+	if err != nil {
+		t.Fatalf("file no longer parses: %v", err)
+	}
+	if issue.Title != "Test" || issue.Status != "in progress" {
+		t.Errorf("existing fields corrupted: title=%q status=%q", issue.Title, issue.Status)
+	}
+}
+
+func TestSetFrontmatterField_UpdatesExistingKey(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "test.md")
+	os.WriteFile(fp, []byte(`---
+title: "Test"
+waiting: "old blocker"
+---
+
+Body.
+`), 0644)
+
+	if err := SetFrontmatterField(fp, "waiting", "new blocker", false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, _ := os.ReadFile(fp)
+	content := string(data)
+	if strings.Contains(content, "old blocker") {
+		t.Errorf("old value not replaced:\n%s", content)
+	}
+	if !strings.Contains(content, `waiting: "new blocker"`) {
+		t.Errorf("new value missing:\n%s", content)
+	}
+}
+
+func TestSetFrontmatterField_ClearRemovesKey(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "test.md")
+	os.WriteFile(fp, []byte(`---
+title: "Test"
+waiting: "blocker"
+priority: "high"
+---
+
+Body.
+`), 0644)
+
+	if err := SetFrontmatterField(fp, "waiting", "", true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, _ := os.ReadFile(fp)
+	content := string(data)
+	if strings.Contains(content, "waiting") {
+		t.Errorf("waiting key should have been removed:\n%s", content)
+	}
+	if !strings.Contains(content, "high") {
+		t.Errorf("unrelated fields should survive:\n%s", content)
+	}
+}
+
+func TestSetFrontmatterField_ClearMissingKeyIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "test.md")
+	original := `---
+title: "Test"
+---
+
+Body.
+`
+	os.WriteFile(fp, []byte(original), 0644)
+
+	if err := SetFrontmatterField(fp, "waiting", "", true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, _ := os.ReadFile(fp)
+	if _, err := ParseIssue("test.md", data); err != nil {
+		t.Fatalf("file should still parse: %v", err)
+	}
+}
+
+func TestSetFrontmatterField_RejectsProtectedKeys(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "test.md")
+	os.WriteFile(fp, []byte(`---
+title: "Test"
+status: "backlog"
+---
+
+Body.
+`), 0644)
+
+	for key := range ProtectedFrontmatterFields {
+		if err := SetFrontmatterField(fp, key, "hacked", false); err == nil {
+			t.Errorf("expected protected key %q to be refused", key)
+		}
+	}
+
+	data, _ := os.ReadFile(fp)
+	if strings.Contains(string(data), "hacked") {
+		t.Errorf("protected field was mutated:\n%s", string(data))
+	}
+}
+
+func TestSetFrontmatterField_RejectsInvalidKey(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "test.md")
+	os.WriteFile(fp, []byte("---\ntitle: \"T\"\n---\n\nbody\n"), 0644)
+
+	bad := []string{"", "Waiting", "wait ing", "9nine", "with-dash", "with.dot"}
+	for _, key := range bad {
+		if err := SetFrontmatterField(fp, key, "x", false); err == nil {
+			t.Errorf("expected invalid key %q to be refused", key)
+		}
+	}
+}
+
+func TestSetFrontmatterField_EscapesSpecialChars(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "test.md")
+	os.WriteFile(fp, []byte("---\ntitle: \"T\"\n---\n\nbody\n"), 0644)
+
+	value := `line "with quotes" and \backslash`
+	if err := SetFrontmatterField(fp, "note", value, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, _ := os.ReadFile(fp)
+	issue, err := ParseIssue("test.md", data)
+	if err != nil {
+		t.Fatalf("file should parse after escaping: %v\n%s", err, string(data))
+	}
+	var got string
+	for _, ef := range issue.ExtraFields {
+		if ef.Key == "note" {
+			got = ef.Value
+		}
+	}
+	if got != value {
+		t.Errorf("round-trip value = %q, want %q", got, value)
+	}
+}
+
 func TestDeleteIssue(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "test.md")
@@ -721,7 +884,8 @@ func TestStatusIndex(t *testing.T) {
 	}{
 		{"idea", 0},
 		{"in design", 1},
-		{"done", 7},
+		{"shipping", 7},
+		{"done", 8},
 		{"none", -1},
 		{"unknown", -1},
 	}
@@ -748,7 +912,9 @@ func TestValidTransition(t *testing.T) {
 		{"idea", "unknown", false}, // unknown status
 		{"none", "idea", false},    // none no longer exists
 		{"testing", "human-testing", true},
-		{"documentation", "done", true},
+		{"documentation", "shipping", true},
+		{"shipping", "done", true},
+		{"documentation", "done", false}, // shipping must come first
 	}
 
 	for _, tt := range tests {
