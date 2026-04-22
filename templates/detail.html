@@ -78,15 +78,32 @@
                     </div>
                 </div>
 
-                {{if .NeedsApproval}}
+                {{if or .NeedsApproval .OptionalApprovals}}
                 <div class="sidebar-section">
                     <h3>Human Approval</h3>
+                    {{if .NeedsApproval}}
                     <div class="sidebar-value">
-                        <button class="approve-btn {{if eq .Issue.HumanApproval .NeedsApproval}}approved{{end}}" id="approve-btn" onclick="toggleApproval('{{.NeedsApproval}}')">
+                        <button class="approve-btn {{if eq .Issue.HumanApproval .NeedsApproval}}approved{{end}}" data-status="{{.NeedsApproval}}" onclick="toggleApproval('{{.NeedsApproval}}')">
                             <span class="approve-check">{{if eq .Issue.HumanApproval .NeedsApproval}}&#10003;{{else}}&#9744;{{end}}</span>
                             Human-approved for {{.NeedsApproval}}
                         </button>
                     </div>
+                    {{end}}
+                    {{range .OptionalApprovals}}
+                    {{$open := eq $.Issue.HumanApproval .Status}}
+                    <div class="sidebar-value optional-approval-group" data-optional-status="{{.Status}}">
+                        <button class="optional-approval-cta{{if $open}} hidden{{end}}" onclick="revealOptionalApproval(this)">
+                            {{if .CTALabel}}{{.CTALabel}}{{else}}Divert to {{.Status}}{{if .Description}} — {{.Description}}{{end}}{{end}}
+                        </button>
+                        <div class="optional-approval-widget{{if not $open}} hidden{{end}}">
+                            <button class="approve-btn {{if $open}}approved{{end}}" data-status="{{.Status}}" onclick="toggleApproval('{{.Status}}')">
+                                <span class="approve-check">{{if $open}}&#10003;{{else}}&#9744;{{end}}</span>
+                                Human-approved for {{.Status}}
+                            </button>
+                            <button class="optional-approval-dismiss" onclick="dismissOptionalApproval(this)">Cancel</button>
+                        </div>
+                    </div>
+                    {{end}}
                 </div>
                 {{end}}
 
@@ -550,15 +567,17 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ status: status })
         }).then(res => res.json()).then(data => {
-            const btn = document.getElementById('approve-btn');
-            const check = btn.querySelector('.approve-check');
-            if (data.human_approval === status) {
-                btn.classList.add('approved');
-                check.innerHTML = '&#10003;';
-            } else {
-                btn.classList.remove('approved');
-                check.innerHTML = '&#9744;';
-            }
+            document.querySelectorAll('.approve-btn[data-status]').forEach(btn => {
+                const btnStatus = btn.dataset.status;
+                const check = btn.querySelector('.approve-check');
+                if (data.human_approval === btnStatus) {
+                    btn.classList.add('approved');
+                    if (check) check.innerHTML = '&#10003;';
+                } else {
+                    btn.classList.remove('approved');
+                    if (check) check.innerHTML = '&#9744;';
+                }
+            });
             if (data.human_approval) {
                 if (data.notified_session) {
                     showToast('Human approval set and sent to bot session ' + data.notified_session);
@@ -571,6 +590,23 @@
                 showToast('Human approval removed');
             }
         });
+    }
+
+    function revealOptionalApproval(btn) {
+        const group = btn.closest('.optional-approval-group');
+        if (!group) return;
+        btn.classList.add('hidden');
+        const widget = group.querySelector('.optional-approval-widget');
+        if (widget) widget.classList.remove('hidden');
+    }
+
+    function dismissOptionalApproval(btn) {
+        const group = btn.closest('.optional-approval-group');
+        if (!group) return;
+        const widget = group.querySelector('.optional-approval-widget');
+        const cta = group.querySelector('.optional-approval-cta');
+        if (widget) widget.classList.add('hidden');
+        if (cta) cta.classList.remove('hidden');
     }
 
     function dispatchToAgent(agent) {

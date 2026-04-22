@@ -7,7 +7,6 @@ projects-*.yaml
 
 # User data (use projects.yaml to point to your issue/doc directories)
 /issues/
-/docs/
 
 # Test data
 /test-issues/

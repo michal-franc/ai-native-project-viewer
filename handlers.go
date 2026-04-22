@@ -486,14 +486,24 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request, proj *tracke
 // --- Issue Detail ---
 
 type DetailData struct {
-	Issue         *IssueView
-	BackURL       string
-	Prefix        string
-	ProjectName   string
-	Statuses      []string
-	SlugMap       map[string]string
-	NeedsApproval string // next status name if it requires human approval, else empty
-	ActiveBots    int
+	Issue             *IssueView
+	BackURL           string
+	Prefix            string
+	ProjectName       string
+	Statuses          []string
+	SlugMap           map[string]string
+	NeedsApproval     string             // required-path next status that requires human approval, else empty
+	OptionalApprovals []OptionalApproval // optional-path transitions that require human approval, hidden behind CTAs
+	ActiveBots        int
+}
+
+// OptionalApproval describes a transition to an Optional status that requires
+// human approval. The detail view renders these behind a CTA button so they
+// don't compete with the required-path approval as the default next step.
+type OptionalApproval struct {
+	Status      string
+	Description string
+	CTALabel    string // workflow-configured button label; falls back to a default in the template
 }
 
 type BodyEditResponse struct {
@@ -557,29 +567,49 @@ func (s *Server) handleDetail(w http.ResponseWriter, r *http.Request, proj *trac
 	wf := proj.LoadWorkflowForIssue(found)
 	statuses := orderedStatusesForIssue(wf, found.Status)
 
-	// Check if the next transition requires human approval.
+	// Classify outgoing transitions that require human approval. The required-path
+	// approval (target is non-optional) is shown inline; optional-path approvals are
+	// surfaced separately so the template can hide them behind a CTA.
 	var needsApproval string
-	nextStatus := wf.NextStatus(found.Status)
-	if nextStatus != "" {
-		if transition := wf.GetTransition(found.Status, nextStatus); transition != nil {
-			for _, action := range transition.Actions {
-				if action.Type == "require_human_approval" {
-					needsApproval = nextStatus
-					break
-				}
+	var optionalApprovals []OptionalApproval
+	for _, t := range wf.Transitions {
+		if t.From != found.Status {
+			continue
+		}
+		requiresApproval := false
+		for _, action := range t.Actions {
+			if action.Type == "require_human_approval" {
+				requiresApproval = true
+				break
 			}
+		}
+		if !requiresApproval {
+			continue
+		}
+		target := wf.GetStatus(t.To)
+		if target != nil && target.Optional {
+			optionalApprovals = append(optionalApprovals, OptionalApproval{
+				Status:      t.To,
+				Description: target.Description,
+				CTALabel:    t.CTALabel,
+			})
+			continue
+		}
+		if needsApproval == "" {
+			needsApproval = t.To
 		}
 	}
 
 	if err := s.tmpl.ExecuteTemplate(w, "detail.html", DetailData{
-		Issue:         issueView(found, sessionMap),
-		BackURL:       backURL,
-		Prefix:        prefix,
-		ProjectName:   proj.Name,
-		Statuses:      statuses,
-		SlugMap:       slugMap,
-		NeedsApproval: needsApproval,
-		ActiveBots:    activeBots,
+		Issue:             issueView(found, sessionMap),
+		BackURL:           backURL,
+		Prefix:            prefix,
+		ProjectName:       proj.Name,
+		Statuses:          statuses,
+		SlugMap:           slugMap,
+		NeedsApproval:     needsApproval,
+		OptionalApprovals: optionalApprovals,
+		ActiveBots:        activeBots,
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}

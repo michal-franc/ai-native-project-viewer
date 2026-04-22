@@ -188,7 +188,10 @@ transitions:
 
   - from: "in progress"
     to: "waiting-for-team-input"
+    cta_label: "Block on another team — park until they respond"
     actions:
+      - type: "require_human_approval"
+        status: "waiting-for-team-input"
       - type: "inject_prompt"
         prompt: |
           Set the `waiting` frontmatter field on the issue to name the team you're blocked on, and summarise the open question in a comment before stepping away.

@@ -37,6 +37,11 @@ type WorkflowTransition struct {
 	From    string           `yaml:"from"`
 	To      string           `yaml:"to"`
 	Actions []WorkflowAction `yaml:"actions"`
+	// CTALabel overrides the default "Divert to <status>" label on the detail-view
+	// CTA button that reveals the approval widget for optional-target transitions.
+	// Only meaningful when the target status is Optional and the transition has a
+	// require_human_approval action.
+	CTALabel string `yaml:"cta_label,omitempty"`
 }
 
 type WorkflowOverlay struct {
@@ -374,9 +379,10 @@ func (w *WorkflowConfig) Clone() *WorkflowConfig {
 	}
 	for i := range w.Transitions {
 		clone.Transitions[i] = WorkflowTransition{
-			From:    w.Transitions[i].From,
-			To:      w.Transitions[i].To,
-			Actions: append([]WorkflowAction(nil), w.Transitions[i].Actions...),
+			From:     w.Transitions[i].From,
+			To:       w.Transitions[i].To,
+			Actions:  append([]WorkflowAction(nil), w.Transitions[i].Actions...),
+			CTALabel: w.Transitions[i].CTALabel,
 		}
 	}
 	for name, overlay := range w.Systems {
@@ -386,9 +392,10 @@ func (w *WorkflowConfig) Clone() *WorkflowConfig {
 		}
 		for i := range overlay.Transitions {
 			clonedOverlay.Transitions[i] = WorkflowTransition{
-				From:    overlay.Transitions[i].From,
-				To:      overlay.Transitions[i].To,
-				Actions: append([]WorkflowAction(nil), overlay.Transitions[i].Actions...),
+				From:     overlay.Transitions[i].From,
+				To:       overlay.Transitions[i].To,
+				Actions:  append([]WorkflowAction(nil), overlay.Transitions[i].Actions...),
+				CTALabel: overlay.Transitions[i].CTALabel,
 			}
 		}
 		clone.Systems[name] = clonedOverlay
@@ -1196,13 +1203,17 @@ func (w *WorkflowConfig) Merge(custom *WorkflowConfig) {
 		base := w.GetTransition(ct.From, ct.To)
 		if base == nil {
 			w.Transitions = append(w.Transitions, WorkflowTransition{
-				From:    ct.From,
-				To:      ct.To,
-				Actions: append([]WorkflowAction(nil), ct.Actions...),
+				From:     ct.From,
+				To:       ct.To,
+				Actions:  append([]WorkflowAction(nil), ct.Actions...),
+				CTALabel: ct.CTALabel,
 			})
 			continue
 		}
 		base.Actions = appendUniqueActions(base.Actions, ct.Actions)
+		if ct.CTALabel != "" {
+			base.CTALabel = ct.CTALabel
+		}
 	}
 
 	if len(custom.Systems) > 0 {

@@ -1563,6 +1563,56 @@ a:hover { text-decoration: underline; }
     font-size: 16px;
 }
 
+/* Optional-path approval: CTA + lazily revealed approval widget */
+.optional-approval-group {
+    margin-top: 8px;
+}
+.optional-approval-group:first-child {
+    margin-top: 0;
+}
+.optional-approval-cta {
+    display: block;
+    width: 100%;
+    padding: 6px 10px;
+    background: transparent;
+    color: var(--muted-fg, #8b8f99);
+    border: 1px dashed rgba(139, 143, 153, 0.35);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1.35;
+    text-align: left;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+.optional-approval-cta:hover {
+    color: #eab308;
+    background: rgba(234, 179, 8, 0.08);
+    border-color: rgba(234, 179, 8, 0.4);
+}
+.optional-approval-widget {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.optional-approval-dismiss {
+    align-self: flex-start;
+    padding: 2px 6px;
+    background: transparent;
+    color: var(--muted-fg, #8b8f99);
+    border: none;
+    cursor: pointer;
+    font-size: 11px;
+    text-decoration: underline;
+}
+.optional-approval-dismiss:hover {
+    color: #f87171;
+}
+.optional-approval-group .hidden,
+.optional-approval-widget.hidden,
+.optional-approval-cta.hidden {
+    display: none;
+}
+
 /* Dispatch modal */
 .dispatch-steps {
     display: flex;
