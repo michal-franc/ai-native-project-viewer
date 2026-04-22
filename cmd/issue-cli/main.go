@@ -34,6 +34,7 @@ type transitionOutput struct {
 	CommentsChanged    bool                      `json:"comments_changed"`
 	NextStatus         string                    `json:"next_status,omitempty"`
 	NextStatusOptional bool                      `json:"next_status_optional,omitempty"`
+	OptionalNextStatuses []string                `json:"optional_next_statuses,omitempty"`
 	Guidance           []string                  `json:"guidance,omitempty"`
 }
 
@@ -1001,15 +1002,30 @@ func printWorkflowNextSteps(wf *tracker.WorkflowConfig, issue *tracker.Issue) {
 		}
 	}
 
-	// Show next transition
-	next := wf.NextStatus(issue.Status)
+	// Show next transition, preferring the first non-optional target so agents
+	// don't walk into an optional side-path by default.
+	required, optionals := wf.DefaultNextStatus(issue.Status)
+	next := required
+	allOptional := false
+	if next == "" && len(optionals) > 0 {
+		next = optionals[0]
+		optionals = optionals[1:]
+		allOptional = true
+	}
 	if next != "" {
 		fmt.Println("== Next ==")
 		suffix := ""
-		if s := wf.GetStatus(next); s != nil && s.Optional {
-			suffix = "   (optional — you may skip to the next required status)"
+		if allOptional {
+			suffix = "   (optional — every remaining status is optional)"
 		}
 		fmt.Printf("  issue-cli transition %s --to \"%s\"%s\n", issue.Slug, next, suffix)
+		if len(optionals) > 0 {
+			fmt.Println()
+			fmt.Println("Optional side-paths:")
+			for _, opt := range optionals {
+				fmt.Printf("  issue-cli transition %s --to \"%s\"\n", issue.Slug, opt)
+			}
+		}
 		prompts := wf.EntryPrompts(issue.Status, next)
 		if len(prompts) > 0 {
 			fmt.Println()
@@ -1186,7 +1202,15 @@ func runTransition(proj *tracker.Project, slug, to string) {
 }
 
 func buildTransitionOutput(wf *tracker.WorkflowConfig, issue *tracker.Issue, from, to string, result tracker.TransitionResult) transitionOutput {
-	next := wf.NextStatus(issue.Status)
+	required, optionals := wf.DefaultNextStatus(issue.Status)
+	next := required
+	nextOptional := false
+	if next == "" && len(optionals) > 0 {
+		next = optionals[0]
+		nextOptional = true
+		optionals = optionals[1:]
+	}
+
 	guidance := []string{}
 	if prompt := strings.TrimSpace(wf.StatusPrompt(issue.Status)); prompt != "" {
 		guidance = append(guidance, prompt)
@@ -1198,26 +1222,21 @@ func buildTransitionOutput(wf *tracker.WorkflowConfig, issue *tracker.Issue, fro
 	if s := wf.GetStatus(issue.Status); s != nil {
 		statusOptional = s.Optional
 	}
-	nextOptional := false
-	if next != "" {
-		if s := wf.GetStatus(next); s != nil {
-			nextOptional = s.Optional
-		}
-	}
 	return transitionOutput{
-		From:               from,
-		To:                 to,
-		Status:             issue.Status,
-		StatusOptional:     statusOptional,
-		Slug:               issue.Slug,
-		File:               issue.FilePath,
-		SideEffects:        transitionSideEffects(result),
-		Checklist:          collectChecklist(issue.BodyRaw),
-		BodyChanged:        result.BodyChanged,
-		CommentsChanged:    false,
-		NextStatus:         next,
-		NextStatusOptional: nextOptional,
-		Guidance:           guidance,
+		From:                 from,
+		To:                   to,
+		Status:               issue.Status,
+		StatusOptional:       statusOptional,
+		Slug:                 issue.Slug,
+		File:                 issue.FilePath,
+		SideEffects:          transitionSideEffects(result),
+		Checklist:            collectChecklist(issue.BodyRaw),
+		BodyChanged:          result.BodyChanged,
+		CommentsChanged:      false,
+		NextStatus:           next,
+		NextStatusOptional:   nextOptional,
+		OptionalNextStatuses: optionals,
+		Guidance:             guidance,
 	}
 }
 
@@ -1277,10 +1296,10 @@ func printTransitionResult(output transitionOutput) {
 	}
 	fmt.Println()
 
-	printWorkflowNextStepsFromData(output.Checklist, output.Guidance, output.NextStatus, output.NextStatusOptional, output.Slug)
+	printWorkflowNextStepsFromData(output.Checklist, output.Guidance, output.NextStatus, output.NextStatusOptional, output.OptionalNextStatuses, output.Slug)
 }
 
-func printWorkflowNextStepsFromData(checklist []transitionChecklistItem, guidance []string, nextStatus string, nextStatusOptional bool, slug string) {
+func printWorkflowNextStepsFromData(checklist []transitionChecklistItem, guidance []string, nextStatus string, nextStatusOptional bool, optionalSidePaths []string, slug string) {
 	if len(checklist) > 0 {
 		checked := 0
 		for _, item := range checklist {
@@ -1311,9 +1330,16 @@ func printWorkflowNextStepsFromData(checklist []transitionChecklistItem, guidanc
 		fmt.Println("== Next ==")
 		suffix := ""
 		if nextStatusOptional {
-			suffix = "   (optional — you may skip to the next required status)"
+			suffix = "   (optional — every remaining status is optional)"
 		}
 		fmt.Printf("  issue-cli transition %s --to \"%s\"%s\n", slug, nextStatus, suffix)
+		if len(optionalSidePaths) > 0 {
+			fmt.Println()
+			fmt.Println("Optional side-paths:")
+			for _, opt := range optionalSidePaths {
+				fmt.Printf("  issue-cli transition %s --to \"%s\"\n", slug, opt)
+			}
+		}
 	}
 }
 

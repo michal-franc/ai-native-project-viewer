@@ -188,6 +188,54 @@ func TestNextRequiredStatus(t *testing.T) {
 	}
 }
 
+func TestDefaultNextStatus(t *testing.T) {
+	wf := &WorkflowConfig{
+		Statuses: []WorkflowStatus{
+			{Name: "a"},
+			{Name: "b", Optional: true},
+			{Name: "c", Optional: true},
+			{Name: "d"},
+			{Name: "e", Optional: true},
+		},
+	}
+
+	required, optionals := wf.DefaultNextStatus("a")
+	if required != "d" {
+		t.Errorf("DefaultNextStatus(a) required = %q, want d", required)
+	}
+	if len(optionals) != 2 || optionals[0] != "b" || optionals[1] != "c" {
+		t.Errorf("DefaultNextStatus(a) optionals = %v, want [b c]", optionals)
+	}
+
+	required, optionals = wf.DefaultNextStatus("b")
+	if required != "d" {
+		t.Errorf("DefaultNextStatus(b) required = %q, want d", required)
+	}
+	if len(optionals) != 1 || optionals[0] != "c" {
+		t.Errorf("DefaultNextStatus(b) optionals = %v, want [c]", optionals)
+	}
+
+	// When only optional statuses remain, required is empty and all are returned so
+	// callers can render them as alternatives rather than silently pick one.
+	required, optionals = wf.DefaultNextStatus("d")
+	if required != "" {
+		t.Errorf("DefaultNextStatus(d) required = %q, want empty", required)
+	}
+	if len(optionals) != 1 || optionals[0] != "e" {
+		t.Errorf("DefaultNextStatus(d) optionals = %v, want [e]", optionals)
+	}
+
+	required, optionals = wf.DefaultNextStatus("e")
+	if required != "" || len(optionals) != 0 {
+		t.Errorf("DefaultNextStatus(e) = (%q, %v), want (\"\", nil)", required, optionals)
+	}
+
+	required, optionals = wf.DefaultNextStatus("unknown")
+	if required != "" || len(optionals) != 0 {
+		t.Errorf("DefaultNextStatus(unknown) = (%q, %v), want (\"\", nil)", required, optionals)
+	}
+}
+
 func TestApplyTransitionToFile_ErrorPointsAtRequiredNext(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "1.md")

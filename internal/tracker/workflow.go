@@ -1291,3 +1291,25 @@ func (w *WorkflowConfig) NextRequiredStatus(current string) string {
 	}
 	return ""
 }
+
+// DefaultNextStatus returns the default forward suggestion for current, plus any
+// optional statuses that sit between current and that default (reachable side-paths).
+// The required target is the first non-optional status after current; the optionals
+// are the contiguous optional statuses skipped to get there. If every remaining status
+// is optional, required is empty and optionals lists them all so callers can render
+// alternatives instead of silently picking one.
+func (w *WorkflowConfig) DefaultNextStatus(current string) (required string, optionals []string) {
+	idx := w.GetStatusIndex(current)
+	if idx == -1 {
+		return "", nil
+	}
+	for i := idx + 1; i < len(w.Statuses); i++ {
+		s := w.Statuses[i]
+		if s.Optional {
+			optionals = append(optionals, s.Name)
+			continue
+		}
+		return s.Name, optionals
+	}
+	return "", optionals
+}

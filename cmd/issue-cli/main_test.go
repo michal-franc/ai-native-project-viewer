@@ -358,6 +358,104 @@ Body
 	}
 }
 
+func TestRunTransitionNextHintSkipsOptionalStatus(t *testing.T) {
+	proj, _ := makeOptionalNextFixture(t)
+	jsonOutput = false
+	output := captureStdout(t, func() {
+		runTransition(proj, "cli/sample", "in progress")
+	})
+
+	// Primary Next must point at the required status, not the optional side-path.
+	assertContains(t, output, "== Next ==\n  issue-cli transition cli/sample --to \"testing\"")
+	assertContains(t, output, "Optional side-paths:")
+	assertContains(t, output, "issue-cli transition cli/sample --to \"team-feedback\"")
+	if strings.Contains(output, "== Next ==\n  issue-cli transition cli/sample --to \"team-feedback\"") {
+		t.Fatalf("primary Next hint should not point at the optional status:\n%s", output)
+	}
+}
+
+func TestRunTransitionJSONCarriesOptionalNextStatuses(t *testing.T) {
+	proj, _ := makeOptionalNextFixture(t)
+	jsonOutput = true
+	defer func() { jsonOutput = false }()
+
+	output := captureStdout(t, func() {
+		runTransition(proj, "cli/sample", "in progress")
+	})
+
+	var got transitionOutput
+	if err := json.Unmarshal([]byte(output), &got); err != nil {
+		t.Fatalf("unmarshal transition output: %v\noutput:\n%s", err, output)
+	}
+	if got.NextStatus != "testing" {
+		t.Fatalf("next_status = %q, want testing", got.NextStatus)
+	}
+	if got.NextStatusOptional {
+		t.Fatal("next_status_optional = true, want false")
+	}
+	if len(got.OptionalNextStatuses) != 1 || got.OptionalNextStatuses[0] != "team-feedback" {
+		t.Fatalf("optional_next_statuses = %v, want [team-feedback]", got.OptionalNextStatuses)
+	}
+}
+
+// makeOptionalNextFixture builds a workflow where the status following "in progress"
+// is declared optional, and the required path sits after it. Used to verify the
+// "Next:" hint skips optional statuses when suggesting the default forward target.
+func makeOptionalNextFixture(t *testing.T) (*tracker.Project, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	issuesDir := filepath.Join(dir, "issues")
+	systemDir := filepath.Join(issuesDir, "CLI")
+	if err := os.MkdirAll(systemDir, 0755); err != nil {
+		t.Fatalf("mkdir issue dir: %v", err)
+	}
+
+	workflowPath := filepath.Join(dir, "workflow.yaml")
+	workflow := strings.TrimSpace(`
+statuses:
+  - name: "backlog"
+  - name: "in progress"
+  - name: "team-feedback"
+    optional: true
+  - name: "testing"
+transitions:
+  - from: "backlog"
+    to: "in progress"
+    actions:
+      - type: require_human_approval
+        status: "in progress"
+      - type: validate
+        rule: has_assignee
+`)
+	if err := os.WriteFile(workflowPath, []byte(workflow), 0644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+
+	issuePath := filepath.Join(systemDir, "sample.md")
+	issue := strings.TrimSpace(`
+---
+title: "sample"
+status: "backlog"
+system: "CLI"
+assignee: "agent-optional-next"
+human_approval: "in progress"
+---
+
+- [x] already done
+`)
+	if err := os.WriteFile(issuePath, []byte(issue), 0644); err != nil {
+		t.Fatalf("write issue: %v", err)
+	}
+
+	return &tracker.Project{
+		Name:         "test",
+		Slug:         "test",
+		IssueDir:     issuesDir,
+		WorkflowFile: workflowPath,
+	}, issuePath
+}
+
 func makeTransitionFixture(t *testing.T) (*tracker.Project, string) {
 	t.Helper()
 
