@@ -144,59 +144,6 @@ func TestRunTransitionJSONIncludesPostTransitionFields(t *testing.T) {
 	}
 }
 
-func TestStartPreflightRequiresApprovalBeforeClaim(t *testing.T) {
-	wf := &tracker.WorkflowConfig{
-		Statuses: []tracker.WorkflowStatus{
-			{Name: "backlog"},
-			{Name: "in progress"},
-		},
-		Transitions: []tracker.WorkflowTransition{
-			{
-				From: "backlog",
-				To:   "in progress",
-				Actions: []tracker.WorkflowAction{
-					{Type: "require_human_approval", Status: "in progress"},
-					{Type: "validate", Rule: "has_assignee"},
-				},
-			},
-		},
-	}
-	issue := &tracker.Issue{Slug: "cli/sample", Status: "backlog"}
-
-	err := startPreflight(wf, issue, "in progress")
-	if err == nil {
-		t.Fatal("expected missing approval to block start")
-	}
-	if !strings.Contains(err.Error(), "human approval for \"in progress\" is missing") {
-		t.Fatalf("error = %q, want approval guidance", err)
-	}
-	if !strings.Contains(err.Error(), "No changes were made.") {
-		t.Fatalf("error = %q, want explicit no-mutation message", err)
-	}
-}
-
-func TestStartPreflightAllowsApprovedBacklog(t *testing.T) {
-	wf := &tracker.WorkflowConfig{
-		Statuses: []tracker.WorkflowStatus{
-			{Name: "backlog"},
-			{Name: "in progress"},
-		},
-		Transitions: []tracker.WorkflowTransition{
-			{
-				From: "backlog",
-				To:   "in progress",
-				Actions: []tracker.WorkflowAction{
-					{Type: "require_human_approval", Status: "in progress"},
-				},
-			},
-		},
-	}
-	issue := &tracker.Issue{Slug: "cli/sample", Status: "backlog", HumanApproval: "in progress"}
-
-	if err := startPreflight(wf, issue, "in progress"); err != nil {
-		t.Fatalf("startPreflight returned error: %v", err)
-	}
-}
 
 func TestNormalizeEscapedText(t *testing.T) {
 	got := normalizeEscapedText(`line1\nline2\r\nline3\tend`)

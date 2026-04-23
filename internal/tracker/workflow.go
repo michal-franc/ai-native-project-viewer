@@ -986,11 +986,29 @@ func (w *WorkflowConfig) ApplyTransitionToFile(filePath, toStatus string) (strin
 }
 
 type StartIssueResult struct {
-	Issue   *Issue
-	Result  TransitionResult
-	Claimed bool
+	Issue        *Issue
+	Result       TransitionResult
+	Claimed      bool
+	Transitioned bool
+	FromStatus   string
+	ToStatus     string
 }
 
+// isHandoffStatus returns true when the agent's job at this status is to hand
+// off — not to work a checklist. start advances through handoff statuses and
+// lands on the next work status.
+func isHandoffStatus(status string) bool {
+	switch status {
+	case "backlog", "human-testing":
+		return true
+	}
+	return false
+}
+
+// StartIssueOnce picks up an issue: claims the assignee (if unset) and, when
+// the current status is a handoff state, advances to the next work status.
+// Preserves the backlog → in progress approval contract while allowing start
+// to succeed from any other status as a plain claim.
 func (w *WorkflowConfig) StartIssueOnce(filePath, slug, assignee string) (*StartIssueResult, error) {
 	var out *StartIssueResult
 
@@ -1007,13 +1025,20 @@ func (w *WorkflowConfig) StartIssueOnce(filePath, slug, assignee string) (*Start
 		issue.FilePath = filePath
 		issue.Slug = slug
 
-		if issue.StartedAt != "" {
-			return fmt.Errorf("issue %s was already started at %s", slug, issue.StartedAt)
+		fromStatus := issue.Status
+		if fromStatus == "done" {
+			return fmt.Errorf("issue %s is already done; nothing to start", slug)
 		}
 
-		next := w.NextStatus(issue.Status)
-		if issue.Status != "backlog" || next != "in progress" {
-			return fmt.Errorf("issue %s cannot be started from status %q", slug, issue.Status)
+		toStatus := ""
+		if isHandoffStatus(fromStatus) {
+			toStatus = w.NextRequiredStatus(fromStatus)
+			if toStatus == "" {
+				toStatus = w.NextStatus(fromStatus)
+			}
+			if toStatus == "" {
+				return fmt.Errorf("issue %s cannot be started from status %q: no forward status available", slug, fromStatus)
+			}
 		}
 
 		rawBody, err := ParseFrontmatter(string(data), &Issue{})
@@ -1022,33 +1047,57 @@ func (w *WorkflowConfig) StartIssueOnce(filePath, slug, assignee string) (*Start
 		}
 		_, comments := ParseComments(rawBody)
 
-		candidate := *issue
-		if candidate.Assignee == "" {
-			candidate.Assignee = assignee
-		}
-
-		if err := w.ValidateTransition(&candidate, "backlog", "in progress", comments); err != nil {
-			if required := w.RequiredHumanApproval("backlog", "in progress"); required != "" && !strings.EqualFold(issue.HumanApproval, required) {
-				return fmt.Errorf("cannot start %s: human approval for %q is missing; no changes were made", slug, required)
-			}
-			return err
-		}
-
+		update := IssueUpdate{}
+		result := TransitionResult{}
 		claimed := false
-		if issue.Assignee == "" {
-			issue.Assignee = assignee
-			claimed = true
+		transitioned := false
+
+		if toStatus != "" {
+			candidate := *issue
+			if candidate.Assignee == "" {
+				candidate.Assignee = assignee
+			}
+
+			if err := w.ValidateTransition(&candidate, fromStatus, toStatus, comments); err != nil {
+				if required := w.RequiredHumanApproval(fromStatus, toStatus); required != "" && !strings.EqualFold(issue.HumanApproval, required) {
+					if fromStatus == "backlog" {
+						return fmt.Errorf("cannot start %s: human approval for %q is missing; no changes were made", slug, required)
+					}
+					return fmt.Errorf("cannot start %s from %q: human approval for %q is missing; no changes were made", slug, fromStatus, required)
+				}
+				return err
+			}
+
+			if issue.Assignee == "" {
+				issue.Assignee = assignee
+				claimed = true
+			}
+
+			result = w.ApplyTransition(issue, fromStatus, toStatus)
+			if claimed && result.Update.Assignee == nil {
+				result.Update.Assignee = stringPtr(assignee)
+			}
+			update = result.Update
+			transitioned = true
+		} else {
+			if issue.Assignee == "" {
+				update.Assignee = stringPtr(assignee)
+				claimed = true
+			}
 		}
 
-		result := w.ApplyTransition(issue, "backlog", "in progress")
-		if claimed && result.Update.Assignee == nil {
-			result.Update.Assignee = stringPtr(assignee)
+		if issue.StartedAt == "" {
+			startedAt := time.Now().UTC().Format(time.RFC3339)
+			update.StartedAt = stringPtr(startedAt)
+			if transitioned {
+				result.Update.StartedAt = update.StartedAt
+			}
 		}
-		startedAt := time.Now().UTC().Format(time.RFC3339)
-		result.Update.StartedAt = stringPtr(startedAt)
 
-		if err := updateIssueFrontmatterLocked(filePath, result.Update); err != nil {
-			return err
+		if transitioned || update.Assignee != nil || update.StartedAt != nil {
+			if err := updateIssueFrontmatterLocked(filePath, update); err != nil {
+				return err
+			}
 		}
 
 		data, err = os.ReadFile(filePath)
@@ -1062,10 +1111,14 @@ func (w *WorkflowConfig) StartIssueOnce(filePath, slug, assignee string) (*Start
 		updatedIssue.FilePath = filePath
 		updatedIssue.Slug = slug
 
+		finalTo := updatedIssue.Status
 		out = &StartIssueResult{
-			Issue:   updatedIssue,
-			Result:  result,
-			Claimed: claimed,
+			Issue:        updatedIssue,
+			Result:       result,
+			Claimed:      claimed,
+			Transitioned: transitioned,
+			FromStatus:   fromStatus,
+			ToStatus:     finalTo,
 		}
 		return nil
 	})

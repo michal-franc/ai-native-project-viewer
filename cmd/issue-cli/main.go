@@ -541,7 +541,7 @@ func printHelp() {
 
 Commands:
   process              Learn how this project works (run this first)
-  start <slug>         *** USE THIS TO BEGIN WORK *** Starts approved backlog work, transitions to in-progress, shows next steps
+  start <slug>         *** USE THIS TO BEGIN WORK *** Picks up an issue from any status — claims, advances handoff states, shows checklist + next steps
   next --version <v>   Find work for a version (default: from project.yaml)
   next --design        Find ideas and in-design issues needing design
   context <slug>       Full context dump for an issue (alias: show)
@@ -570,7 +570,7 @@ Global flags:
 First time? Run these:
   1. issue-cli process
   2. issue-cli next
-  3. issue-cli start <slug>   # backlog work must already be approved for in progress
+  3. issue-cli start <slug>   # works from any status — transitions from backlog/human-testing need approval
 `)
 }
 
@@ -633,7 +633,7 @@ Every issue follows this lifecycle:
 
 == Quick start ==
   issue-cli next --version 0.1    — find work for version 0.1
-  issue-cli start <slug>          — begin approved backlog work (claims + starts in-progress)
+  issue-cli start <slug>          — pick up an issue at any status (claims + advances handoff states)
   issue-cli done <slug>           — finish when complete
 
 Run 'issue-cli process <topic>' for details:
@@ -932,27 +932,29 @@ func runStart(proj *tracker.Project, slug, assignee string) {
 		assignee = agentNameForSlug(slug)
 	}
 
-	next := wf.NextStatus(issue.Status)
-	if err := startPreflight(wf, issue, next); err != nil {
-		fatal("%v", err)
-	}
-
 	started, err := wf.StartIssueOnce(issue.FilePath, slug, assignee)
 	if err != nil {
+		if strings.Contains(err.Error(), "human approval for") && strings.Contains(err.Error(), "is missing") {
+			fatal("%s\n\nNext step: approve the required status in the issue viewer, then rerun:\n  issue-cli start %s", err.Error(), slug)
+		}
 		fatal("%v", err)
 	}
 	issue = started.Issue
 
 	fmt.Printf("== Starting work on: %s ==\n", issue.Title)
-	fmt.Printf("Status: %s\n", statusLabel(wf, "backlog"))
+	fmt.Printf("Status: %s\n", statusLabel(wf, started.FromStatus))
 
 	if started.Claimed {
 		fmt.Printf("✓ Claimed (assignee: %s)\n", assignee)
-	} else {
+	} else if issue.Assignee != "" {
 		fmt.Printf("Already claimed by: %s\n", issue.Assignee)
 	}
 
-	fmt.Println("✓ Status → in progress")
+	if started.Transitioned && started.FromStatus != started.ToStatus {
+		fmt.Printf("✓ Status → %s\n", started.ToStatus)
+	} else {
+		fmt.Printf("Status unchanged (%s is a work status — ready to pick up)\n", started.ToStatus)
+	}
 	if started.Result.BodyAppended {
 		fmt.Println("✓ Workflow content appended to issue body")
 	}
@@ -964,17 +966,18 @@ func runStart(proj *tracker.Project, slug, assignee string) {
 	fmt.Println()
 
 	printWorkflowNextSteps(wf, issue)
+	printStartWorkflowReminder(wf)
 }
 
-func startPreflight(wf *tracker.WorkflowConfig, issue *tracker.Issue, next string) error {
-	if issue.Status != "backlog" || next == "" {
-		return nil
+func printStartWorkflowReminder(wf *tracker.WorkflowConfig) {
+	order := wf.GetStatusOrder()
+	if len(order) == 0 {
+		return
 	}
-	if approvalStatus := wf.RequiredHumanApproval(issue.Status, next); approvalStatus != "" && !strings.EqualFold(issue.HumanApproval, approvalStatus) {
-		return fmt.Errorf("Cannot start %s: human approval for %q is missing.\nNo changes were made.\n\nNext step: approve %q in the issue viewer, then rerun:\n  issue-cli start %s",
-			issue.Slug, approvalStatus, approvalStatus, issue.Slug)
-	}
-	return nil
+	fmt.Println()
+	fmt.Println("== Workflow lifecycle ==")
+	fmt.Printf("  %s\n", strings.Join(order, " → "))
+	fmt.Println("Run 'issue-cli process workflow' or 'issue-cli process transitions' for details.")
 }
 
 func printWorkflowNextSteps(wf *tracker.WorkflowConfig, issue *tracker.Issue) {

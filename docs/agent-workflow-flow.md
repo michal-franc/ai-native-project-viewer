@@ -38,16 +38,15 @@ issue-cli start <slug>
 issue-cli show <slug>
 ```
 
-`start` claims the issue and shows next steps, but backlog work must already be approved for `in progress` in the issue viewer. If approval is missing, `start` fails before mutating assignee or status and tells the user that no changes were made. `show` prints the full issue context.
+`start` works from any status: it claims the issue, auto-advances through handoff states (`backlog`, `human-testing`) honoring their approval gates, and leaves the issue at a work status with its checklist and guidance ready. If an approval gate is crossed without the matching approval, `start` fails before mutating assignee or status and tells the user that no changes were made. Re-running `start` on an already-started issue is idempotent. `show` prints the full issue context.
 
 ## 3. Status Guidance
 
 Workflow guidance comes from two layers:
 
-- `statuses[].prompt`
-  Baseline guidance for how to work while in the current status.
-- `transitions[].actions`
-  Ordered transition behavior such as validations, append actions, prompt injection, field updates, and approvals.
+`statuses[].prompt` — baseline guidance for how to work while in the current status.
+
+`transitions[].actions` — ordered transition behavior such as validations, append actions, prompt injection, field updates, and approvals.
 
 In practice:
 
@@ -58,22 +57,14 @@ In practice:
 
 The normal lifecycle is:
 
-1. `idea`
-   Clarify the idea with the human, narrow scope, and ask questions.
-2. `in design`
-   Review docs and code, structure the solution, capture assumptions and human input. When the design is complete, stop and request backlog approval before attempting the transition.
-3. `backlog`
-   Ready state after design and approval. Do not run `issue-cli start` until `in progress` has been approved in the issue viewer. If you do run it without approval, treat the failure as a no-mutation preflight result and stop for human approval instead of retrying blindly.
-4. `in progress`
-   Implement the approved design and keep the issue updated.
-5. `testing`
-   Add relevant automated coverage and log test evidence.
-6. `human-testing`
-   Prepare explicit manual verification for a human.
-7. `documentation`
-   Update the relevant docs for the affected system.
-8. `done`
-   No active prompt. Work is complete.
+1. `idea` — clarify the idea with the human, narrow scope, and ask questions.
+2. `in design` — review docs and code, structure the solution, capture assumptions and human input. When the design is complete, stop and request backlog approval before attempting the transition.
+3. `backlog` — ready state after design and approval. `issue-cli start` from here requires `in progress` to be approved in the issue viewer; if approval is missing the command fails without mutating state — stop and ask for approval instead of retrying blindly.
+4. `in progress` — implement the approved design and keep the issue updated.
+5. `testing` — add relevant automated coverage and log test evidence.
+6. `human-testing` — prepare explicit manual verification for a human. `issue-cli start` from here advances to `documentation` once that status is approved — otherwise it errors with a clear approval-missing message.
+7. `documentation` — update the relevant docs for the affected system.
+8. `done` — no active prompt. Work is complete.
 
 ## 5. Transitions
 
@@ -83,36 +74,15 @@ The high-level behavior is:
 
 1. validations run first
 2. if blocked, the transition fails and explains why
-3. if allowed, transition effects run:
-   - append sections
-   - inject prompts
-   - set fields
-   - approval checks
+3. if allowed, transition effects run: append sections, inject prompts, set fields, approval checks
 
 Examples:
 
-- `idea -> in design`
-  - validate body is not empty
-  - append `Idea`, `Design`, and `Human Input`
-- `in design -> backlog`
-  - validate those sections are complete
-  - require human approval
-  - append `Readiness`
-  - clear assignee
-- `backlog -> in progress`
-  - require human approval
-  - require assignee
-  - validate `Readiness`
-  - append `Implementation` and `Test Plan`
-- `testing -> human-testing`
-  - validate `Testing`
-  - require a `tests:` comment
-  - append `Human Testing`
-- `human-testing -> documentation`
-  - validate `Human Testing`
-  - require a `tests:` comment
-  - require human approval
-  - append `Documentation`
+- `idea -> in design` — validate body is not empty; append `Idea`, `Design`, and `Human Input`
+- `in design -> backlog` — validate those sections are complete; require human approval; append `Readiness`; clear assignee
+- `backlog -> in progress` — require human approval; require assignee; validate `Readiness`; append `Implementation` and `Test Plan`
+- `testing -> human-testing` — validate `Testing`; require a `tests:` comment; append `Human Testing`
+- `human-testing -> documentation` — validate `Human Testing`; require a `tests:` comment; require human approval; append `Documentation`
 
 ## 6. System Overlays
 

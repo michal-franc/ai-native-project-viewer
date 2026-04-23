@@ -931,7 +931,7 @@ func TestPreviewTransition(t *testing.T) {
 	}
 }
 
-func TestStartIssueOnce_RejectsSecondRun(t *testing.T) {
+func TestStartIssueOnce_SecondRunIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "issue.md")
 	content := `---
@@ -954,9 +954,145 @@ Body.
 	if first.Issue.StartedAt == "" {
 		t.Fatal("started_at should be recorded")
 	}
+	if !first.Transitioned {
+		t.Fatal("first start should record transition backlog → in progress")
+	}
+	if first.Issue.Status != "in progress" {
+		t.Fatalf("first status = %q, want in progress", first.Issue.Status)
+	}
 
+	second, err := wf.StartIssueOnce(fp, "sample", "alice")
+	if err != nil {
+		t.Fatalf("second start unexpectedly failed: %v", err)
+	}
+	if second.Transitioned {
+		t.Fatal("second start should not transition")
+	}
+	if second.Claimed {
+		t.Fatal("second start should not re-claim")
+	}
+	if second.Issue.Status != "in progress" {
+		t.Fatalf("second status = %q, want in progress", second.Issue.Status)
+	}
+	if second.Issue.StartedAt != first.Issue.StartedAt {
+		t.Fatalf("started_at changed on second run: %q → %q", first.Issue.StartedAt, second.Issue.StartedAt)
+	}
+}
+
+func TestStartIssueOnce_ClaimsWorkStatusWithoutTransition(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "issue.md")
+	content := `---
+title: "Sample"
+status: "in progress"
+---
+
+## Implementation
+- [ ] do the thing
+`
+	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
+		t.Fatalf("write issue: %v", err)
+	}
+
+	wf := DefaultWorkflow()
+	got, err := wf.StartIssueOnce(fp, "sample", "alice")
+	if err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	if got.Transitioned {
+		t.Fatal("expected no transition when starting at a work status")
+	}
+	if !got.Claimed {
+		t.Fatal("expected claim on an unassigned work status")
+	}
+	if got.Issue.Assignee != "alice" {
+		t.Fatalf("assignee = %q, want alice", got.Issue.Assignee)
+	}
+	if got.Issue.Status != "in progress" {
+		t.Fatalf("status = %q, want in progress", got.Issue.Status)
+	}
+	if got.Issue.StartedAt == "" {
+		t.Fatal("started_at should be recorded on first claim")
+	}
+}
+
+func TestStartIssueOnce_ClaimsIdeaWithoutTransition(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "issue.md")
+	content := `---
+title: "Sample"
+status: "idea"
+---
+
+Rough thought.
+`
+	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
+		t.Fatalf("write issue: %v", err)
+	}
+
+	wf := DefaultWorkflow()
+	got, err := wf.StartIssueOnce(fp, "sample", "alice")
+	if err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+	if got.Transitioned {
+		t.Fatal("idea is a work status — no transition expected")
+	}
+	if !got.Claimed {
+		t.Fatal("expected claim")
+	}
+	if got.Issue.Status != "idea" {
+		t.Fatalf("status = %q, want idea", got.Issue.Status)
+	}
+}
+
+func TestStartIssueOnce_RejectsDone(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "issue.md")
+	content := `---
+title: "Sample"
+status: "done"
+---
+
+Body.
+`
+	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
+		t.Fatalf("write issue: %v", err)
+	}
+
+	wf := DefaultWorkflow()
 	if _, err := wf.StartIssueOnce(fp, "sample", "alice"); err == nil {
-		t.Fatal("second start should fail")
+		t.Fatal("expected start to reject done issues")
+	} else if !strings.Contains(err.Error(), "already done") {
+		t.Fatalf("error = %q, want 'already done' message", err)
+	}
+}
+
+func TestStartIssueOnce_HumanTestingRequiresApproval(t *testing.T) {
+	dir := t.TempDir()
+	fp := filepath.Join(dir, "issue.md")
+	content := `---
+title: "Sample"
+status: "human-testing"
+assignee: "alice"
+---
+
+Body.
+`
+	if err := os.WriteFile(fp, []byte(content), 0644); err != nil {
+		t.Fatalf("write issue: %v", err)
+	}
+
+	wf := DefaultWorkflow()
+	if _, err := wf.StartIssueOnce(fp, "sample", "alice"); err == nil {
+		t.Fatal("expected start at human-testing to require approval")
+	} else {
+		if !strings.Contains(err.Error(), `human approval for "documentation" is missing`) {
+			t.Fatalf("error = %q, want documentation approval failure", err)
+		}
+		if !strings.Contains(err.Error(), "no changes were made") {
+			t.Fatalf("error = %q, want no-mutation message", err)
+		}
 	}
 }
 

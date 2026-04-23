@@ -16,7 +16,7 @@ The CLI system covers `issue-cli`, the command-line tool agents use to interact 
 | Command                          | Description                              |
 |:---------------------------------|:-----------------------------------------|
 | `issue-cli show <slug>`          | Print full issue context                 |
-| `issue-cli start <slug>`         | Claim issue and begin work               |
+| `issue-cli start <slug>`         | Pick up issue from any status — claim + advance handoff states |
 | `issue-cli transition <slug>`    | Attempt the next workflow transition     |
 | `issue-cli comment <slug>`       | Add a comment to an issue                |
 | `issue-cli append <slug>`        | Append content to issue body             |
