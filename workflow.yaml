@@ -56,7 +56,8 @@ statuses:
     description: "Committing and pushing changes"
     prompt: |
       Commit the changes with a message referencing the issue, push the commit to the remote, and note a PR link if one is opened.
-      Stop and ask for `done` approval in the issue viewer once the commit is pushed.
+      Cut a release: bump the version, create an annotated tag (e.g. `git tag -as vX.Y.Z -m "..."`), and push the tag so the release-marker workflow publishes a GitHub Release.
+      Stop and ask for `done` approval in the issue viewer once the commit is pushed and the release tag is visible on GitHub.
   - name: "done"
     description: "Completed"
 
@@ -169,6 +170,7 @@ transitions:
           - [ ] Changes committed with a message referencing the issue
           - [ ] Commit pushed to the remote
           - [ ] PR opened if applicable
+          - [ ] Release tag created and pushed (triggers release-marker workflow)
   - from: "shipping"
     to: "done"
     actions:
