@@ -303,6 +303,26 @@ func transitionActionDescriptions(t tracker.WorkflowTransition, wf *tracker.Work
 	return descs
 }
 
+// nextTransitionContract returns the validations/approvals (requires) and the
+// side-effects (will) of the transition that would move the issue from
+// fromStatus to toStatus, using the same wording as `process transitions`.
+// Returns empty slices when no rule applies (or no matching transition exists),
+// so callers can render each bucket only when non-empty.
+func nextTransitionContract(wf *tracker.WorkflowConfig, fromStatus, toStatus string) (requires, sideEffects []string) {
+	t := wf.ResolveTransition(fromStatus, toStatus)
+	if t == nil {
+		return nil, nil
+	}
+	for _, d := range transitionActionDescriptions(*t, wf) {
+		if strings.HasPrefix(d, "Side-effect:") {
+			sideEffects = append(sideEffects, d)
+		} else {
+			requires = append(requires, d)
+		}
+	}
+	return requires, sideEffects
+}
+
 func runProcessSchema(ctx *Context) error {
 	w := ctx.Stdout
 	fmt.Fprintln(w, "== workflow.yaml schema ==")
