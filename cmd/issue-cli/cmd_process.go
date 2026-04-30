@@ -72,6 +72,9 @@ func runProcess(ctx *Context, args []string) error {
 }
 
 func runProcessWorkflow(ctx *Context, _ []string) error {
+	if ctx.Project == nil {
+		return fmt.Errorf("process workflow needs a project — pass --project <slug> or run from a project root")
+	}
 	wf := ctx.Project.LoadWorkflow()
 	statusOrder := wf.GetStatusOrder()
 	statusDescs := wf.GetStatusDescriptions()
@@ -97,6 +100,9 @@ func runProcessWorkflow(ctx *Context, _ []string) error {
 }
 
 func runProcessSystems(ctx *Context) error {
+	if ctx.Project == nil {
+		return fmt.Errorf("process systems needs a project — pass --project <slug> or run from a project root")
+	}
 	proj := ctx.Project
 	issues, _ := tracker.LoadIssues(proj.IssueDir)
 	_, systems, _, _, _ := tracker.CollectFilterValues(issues)
@@ -120,6 +126,9 @@ func runProcessSystems(ctx *Context) error {
 }
 
 func runProcessTransitions(ctx *Context, args []string) error {
+	if ctx.Project == nil {
+		return fmt.Errorf("process transitions needs a project — pass --project <slug> or run from a project root")
+	}
 	proj := ctx.Project
 	wf := proj.LoadWorkflow()
 
