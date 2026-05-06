@@ -1019,6 +1019,22 @@ a:hover { text-decoration: underline; }
     box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
 }
 
+.board-hide-empty {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    margin-left: auto;
+}
+
+.board-hide-empty input {
+    margin: 0;
+    cursor: pointer;
+}
+
 .board-layout-btn {
     background: var(--bg-secondary);
     color: var(--text-secondary);
@@ -1029,7 +1045,6 @@ a:hover { text-decoration: underline; }
     height: 32px;
     display: flex;
     align-items: center;
-    margin-left: auto;
 }
 
 .board-layout-btn:hover {
